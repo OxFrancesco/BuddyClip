@@ -36,7 +36,7 @@ public actor VaultStore {
     private let maxEntries = 250
     private let fileURL: URL
 
-    public init() {
+    private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "ClipboardVault", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -81,7 +81,11 @@ public actor VaultStore {
     private func encryptionKey() throws -> SymmetricKey {
         if let existing = try readKeychainValue() { return SymmetricKey(data: existing) }
         let data = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
-        try writeKeychainValue(data)
+        let status = writeKeychainValue(data)
+        if status == errSecDuplicateItem, let existing = try readKeychainValue() {
+            return SymmetricKey(data: existing)
+        }
+        guard status == errSecSuccess else { throw VaultError.unreadableVault }
         return SymmetricKey(data: data)
     }
 
@@ -99,7 +103,7 @@ public actor VaultStore {
         return result as? Data
     }
 
-    private func writeKeychainValue(_ data: Data) throws {
+    private func writeKeychainValue(_ data: Data) -> OSStatus {
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -107,6 +111,6 @@ public actor VaultStore {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
-        guard SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess else { throw VaultError.unreadableVault }
+        return SecItemAdd(attributes as CFDictionary, nil)
     }
 }

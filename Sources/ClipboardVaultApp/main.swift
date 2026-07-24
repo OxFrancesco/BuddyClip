@@ -5,9 +5,11 @@ import VaultCore
 
 @main
 struct ClipboardVaultApp: App {
+    @State private var model = VaultViewModel()
+
     var body: some Scene {
         MenuBarExtra("Clipboard Vault", systemImage: "lock.doc") {
-            VaultMenu()
+            VaultMenu(model: model)
         }
         .menuBarExtraStyle(.window)
     }
@@ -17,19 +19,30 @@ struct ClipboardVaultApp: App {
 @Observable
 final class VaultViewModel {
     private(set) var entries: [VaultEntry] = []
+    private(set) var lastError: String?
     private var changeCount = NSPasteboard.general.changeCount
     private var timer: Timer?
 
     init() {
         refresh()
-        timer = .scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+        if let text = NSPasteboard.general.string(forType: .string) {
+            persist(text)
+        }
+        let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.captureIfChanged() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func refresh() {
         Task {
-            entries = (try? await VaultStore.shared.entries()) ?? []
+            do {
+                entries = try await VaultStore.shared.entries()
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
         }
     }
 
@@ -40,7 +53,12 @@ final class VaultViewModel {
 
     func clear() {
         Task {
-            try? await VaultStore.shared.clear()
+            do {
+                try await VaultStore.shared.clear()
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
             refresh()
         }
     }
@@ -50,15 +68,24 @@ final class VaultViewModel {
         guard pasteboard.changeCount != changeCount else { return }
         changeCount = pasteboard.changeCount
         guard let text = pasteboard.string(forType: .string) else { return }
+        persist(text)
+    }
+
+    private func persist(_ text: String) {
         Task {
-            try? await VaultStore.shared.add(text)
-            refresh()
+            do {
+                try await VaultStore.shared.add(text)
+                entries = try await VaultStore.shared.entries()
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
         }
     }
 }
 
 struct VaultMenu: View {
-    @State private var model = VaultViewModel()
+    let model: VaultViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -67,6 +94,12 @@ struct VaultMenu: View {
                 Spacer()
                 Button("Clear", role: .destructive) { model.clear() }
                     .accessibilityLabel("Clear clipboard vault")
+            }
+
+            if let error = model.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             if model.entries.isEmpty {
