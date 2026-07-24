@@ -44,7 +44,7 @@ public actor VaultStore {
     }
 
     public func entries() throws -> [VaultEntry] {
-        guard FileManager.default.fileExists(atPath: fileURL.path()) else { return [] }
+        guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else { return [] }
         let sealed = try Data(contentsOf: fileURL)
         let key = try encryptionKey()
         guard let box = try? AES.GCM.SealedBox(combined: sealed) else { throw VaultError.unreadableVault }
