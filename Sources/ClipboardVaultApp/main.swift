@@ -27,6 +27,7 @@ final class VaultViewModel {
     private var changeCount = NSPasteboard.general.changeCount
     private var timer: Timer?
     private var flashTask: Task<Void, Never>?
+    private var vaultRetryAfter = Date.distantPast
 
     init() {
         refresh()
@@ -50,8 +51,12 @@ final class VaultViewModel {
             do {
                 entries = try await VaultStore.shared.entries()
                 lastError = nil
+                vaultRetryAfter = .distantPast
             } catch {
                 lastError = error.localizedDescription
+                // Back off so an unauthorized/rejected keychain read does not
+                // re-trigger the system prompt on every poll tick.
+                vaultRetryAfter = Date().addingTimeInterval(15)
             }
         }
     }
@@ -111,6 +116,12 @@ final class VaultViewModel {
         }
         adoptOrphanedSensitiveCopy()
         captureIfChanged()
+        // Self-heal: after a transient keychain failure (e.g. a pending
+        // permission prompt), retry periodically so the error banner clears
+        // on its own instead of sticking forever.
+        if lastError != nil, Date() >= vaultRetryAfter {
+            refresh()
+        }
     }
 
     /// If another process (e.g. the CLI with --no-wait) left a marked
@@ -157,13 +168,16 @@ final class VaultViewModel {
     }
 
     private func persist(_ text: String) {
+        guard Date() >= vaultRetryAfter else { return }
         Task {
             do {
                 try await VaultStore.shared.add(text)
                 entries = try await VaultStore.shared.entries()
                 lastError = nil
+                vaultRetryAfter = .distantPast
             } catch {
                 lastError = error.localizedDescription
+                vaultRetryAfter = Date().addingTimeInterval(15)
             }
         }
     }
