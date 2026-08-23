@@ -161,7 +161,7 @@ public actor VaultStore {
     public func find(query: String?) throws -> [VaultEntry] {
         let all = try entries()
         guard let query, !query.isEmpty else { return all }
-        return all.filter { $0.text.localizedCaseInsensitiveContains(query) }
+        return FuzzySearch().ranked(all, query: query, text: \.text).map(\.item)
     }
 
     public func entry(id: UUID) throws -> VaultEntry? {

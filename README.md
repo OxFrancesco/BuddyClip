@@ -41,7 +41,7 @@ Sometimes you copy something you don't want stored at all — a password, a one-
 | Command | Description |
 | --- | --- |
 | `list [--json] [--limit N]` | List stored entries, newest first |
-| `search <text> [--json] [--limit N]` | Search stored entries |
+| `search <text> [--json] [--limit N]` | Fuzzy-search stored entries, best matches first |
 | `get <entry-id>` | Print an entry's full text to stdout |
 | `copy <entry-id> [--sensitive] [--clear-after S] [--no-wait]` | Copy an entry to the clipboard |
 | `latest [--sensitive] [--clear-after S] [--no-wait]` | Copy the most recent entry |
@@ -54,7 +54,7 @@ Sometimes you copy something you don't want stored at all — a password, a one-
 
 ## Menu-bar app
 
-- Live search across history
+- Live fuzzy search across history — typo-tolerant subsequence matching (`gthb` finds GitHub links) with ranked results and highlighted hits
 - Click an entry to copy (checkmark confirms); Option-click for a sensitive auto-clearing copy
 - Right-click for Copy / Copy Once / Delete
 - Relative timestamps, entry count, clear-all with confirmation

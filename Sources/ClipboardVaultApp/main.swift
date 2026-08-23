@@ -3,6 +3,14 @@ import Observation
 import SwiftUI
 import VaultCore
 
+/// A history entry filtered by the current query, with the character offsets
+/// the fuzzy matcher hit (empty when not searching) for highlighting.
+private struct FilteredEntry: Identifiable {
+    let entry: VaultEntry
+    let positions: [Int]
+    var id: UUID { entry.id }
+}
+
 @main
 struct ClipboardVaultApp: App {
     @State private var model = VaultViewModel()
@@ -190,8 +198,12 @@ struct VaultMenu: View {
     @State private var query = ""
     @State private var confirmingClear = false
 
-    private var filteredEntries: [VaultEntry] {
-        query.isEmpty ? model.entries : model.entries.filter { $0.text.localizedCaseInsensitiveContains(query) }
+    private var filteredEntries: [FilteredEntry] {
+        guard !query.isEmpty else {
+            return model.entries.map { FilteredEntry(entry: $0, positions: []) }
+        }
+        return FuzzySearch().ranked(model.entries, query: query, text: \.text)
+            .map { FilteredEntry(entry: $0.item, positions: $0.result.positions) }
     }
 
     var body: some View {
@@ -279,18 +291,49 @@ struct VaultMenu: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(filteredEntries) { entry in
+                    ForEach(filteredEntries) { filtered in
                         EntryRow(
-                            entry: entry,
-                            copied: model.recentlyCopiedID == entry.id,
-                            onCopy: { model.copy(entry) },
-                            onCopyOnce: { model.copyOnce(entry) },
-                            onDelete: { model.delete(entry) }
+                            entry: filtered.entry,
+                            displayText: Self.highlightedText(
+                                of: filtered.entry.text,
+                                positions: filtered.positions
+                            ),
+                            copied: model.recentlyCopiedID == filtered.entry.id,
+                            onCopy: { model.copy(filtered.entry) },
+                            onCopyOnce: { model.copyOnce(filtered.entry) },
+                            onDelete: { model.delete(filtered.entry) }
                         )
                     }
                 }
             }
         }
+    }
+
+    /// Builds the row text with matched characters emphasized. Chunking
+    /// consecutive offsets keeps the number of attributed runs small.
+    private static func highlightedText(of text: String, positions: [Int]) -> AttributedString {
+        guard !positions.isEmpty else { return AttributedString(text) }
+        let chars = Array(text)
+        var result = AttributedString()
+        var index = 0
+        let matches = Set(positions)
+        while index < chars.count {
+            var end = index
+            while end < chars.count, matches.contains(end) == matches.contains(index) {
+                end += 1
+            }
+            let chunk = String(chars[index..<end])
+            if matches.contains(index) {
+                var attributed = AttributedString(chunk)
+                attributed.font = .body.bold()
+                attributed.foregroundColor = .accentColor
+                result.append(attributed)
+            } else {
+                result.append(AttributedString(chunk))
+            }
+            index = end
+        }
+        return result
     }
 
     private var footer: some View {
@@ -311,6 +354,7 @@ struct VaultMenu: View {
 
 private struct EntryRow: View {
     let entry: VaultEntry
+    let displayText: AttributedString
     let copied: Bool
     let onCopy: () -> Void
     let onCopyOnce: () -> Void
@@ -320,7 +364,7 @@ private struct EntryRow: View {
         Button(action: handleTap) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.text)
+                    Text(displayText)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                     Text(entry.createdAt, format: .relative(presentation: .named))

@@ -12,5 +12,6 @@ let package = Package(
         .target(name: "VaultCore"),
         .executableTarget(name: "ClipboardVaultCLI", dependencies: ["VaultCore"]),
         .executableTarget(name: "ClipboardVaultApp", dependencies: ["VaultCore"]),
+        .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore"]),
     ]
 )
