@@ -3,15 +3,89 @@ import CryptoKit
 import Foundation
 import Security
 
-public struct VaultEntry: Codable, Identifiable, Sendable {
+public struct VaultEntry: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
+    /// When this entry was last captured from the clipboard.
     public let createdAt: Date
     public let text: String
+    /// How many times this exact text has been captured (1 = first copy).
+    public let copyCount: Int
+    /// Every capture timestamp, newest first.
+    public let copyHistory: [Date]
 
-    public init(id: UUID = UUID(), createdAt: Date = .now, text: String) {
+    public init(
+        id: UUID = UUID(),
+        createdAt: Date = .now,
+        text: String,
+        copyCount: Int = 1,
+        copyHistory: [Date]? = nil
+    ) {
         self.id = id
         self.createdAt = createdAt
         self.text = text
+        self.copyCount = copyCount
+        self.copyHistory = copyHistory ?? [createdAt]
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAt, text, copyCount, copyHistory
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.createdAt = createdAt
+        self.text = try container.decode(String.self, forKey: .text)
+        // Entries written before duplicate tracking existed decode as a
+        // single capture at their original timestamp.
+        self.copyCount = try container.decodeIfPresent(Int.self, forKey: .copyCount) ?? 1
+        self.copyHistory = try container.decodeIfPresent([Date].self, forKey: .copyHistory) ?? [createdAt]
+    }
+}
+
+/// Pure vault-list transitions so capture behavior stays unit-testable.
+public enum VaultReducer {
+    public static let defaultMaxEntries = 250
+
+    /// Records a clipboard capture of `text`:
+    ///
+    /// - New text is inserted at the front as a single-capture entry.
+    /// - Text already stored anywhere in the list is promoted to the front,
+    ///   its timestamp becomes the new capture time and its capture count
+    ///   and history grow — one row per unique text, no matter how many
+    ///   times it was copied.
+    /// - Empty or whitespace-only text is ignored.
+    /// - The list never grows past `maxEntries`.
+    public static func merging(
+        _ entries: [VaultEntry],
+        captured text: String,
+        at date: Date = .now,
+        maxEntries: Int = defaultMaxEntries
+    ) -> [VaultEntry] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return entries }
+
+        var all = entries
+        if let index = all.firstIndex(where: { $0.text == trimmed }) {
+            let existing = all.remove(at: index)
+            all.insert(
+                VaultEntry(
+                    id: existing.id,
+                    createdAt: date,
+                    text: existing.text,
+                    copyCount: existing.copyCount + 1,
+                    copyHistory: [date] + existing.copyHistory
+                ),
+                at: 0
+            )
+        } else {
+            all.insert(VaultEntry(createdAt: date, text: trimmed), at: 0)
+        }
+        if all.count > maxEntries {
+            all.removeLast(all.count - maxEntries)
+        }
+        return all
     }
 }
 
@@ -149,13 +223,7 @@ public actor VaultStore {
     }
 
     public func add(_ text: String) throws {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        var all = try entries()
-        guard all.first?.text != trimmed else { return }
-        all.insert(VaultEntry(text: trimmed), at: 0)
-        if all.count > maxEntries { all.removeLast(all.count - maxEntries) }
-        try save(all)
+        try save(VaultReducer.merging(try entries(), captured: text, maxEntries: maxEntries))
     }
 
     public func find(query: String?) throws -> [VaultEntry] {

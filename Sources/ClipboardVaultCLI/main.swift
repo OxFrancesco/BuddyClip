@@ -194,18 +194,19 @@ struct ClipboardVaultCLI {
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\t", with: " ")
         let truncated = preview.count > 160 ? preview.prefix(160) + "…" : preview
-        print("\(entry.id.uuidString)\t\(entry.createdAt.ISO8601Format())\t\(truncated)")
+        print("\(entry.id.uuidString)\t\(entry.createdAt.ISO8601Format())\t×\(entry.copyCount)\t\(truncated)")
     }
 
     private static func printJSON(_ entries: [VaultEntry]) {
         struct EntryJSON: Encodable {
             let id: UUID
             let createdAt: String
+            let copyCount: Int
             let text: String
         }
         let formatter = ISO8601DateFormatter()
         let payload = entries.map {
-            EntryJSON(id: $0.id, createdAt: formatter.string(from: $0.createdAt), text: $0.text)
+            EntryJSON(id: $0.id, createdAt: formatter.string(from: $0.createdAt), copyCount: $0.copyCount, text: $0.text)
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -219,7 +220,9 @@ struct ClipboardVaultCLI {
         print(
             """
             clipboard-vault list [--json] [--limit N]
-                List stored entries (newest first).
+                List stored entries (newest first). Duplicate copies of the
+                same text are aggregated into one row; the timestamp is the
+                most recent copy and the ×N column counts total captures.
             clipboard-vault search <text> [--json] [--limit N]
                 Search stored entries.
             clipboard-vault get <entry-id>

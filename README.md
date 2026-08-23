@@ -19,7 +19,19 @@ In another terminal:
 
 > After rebuilding, macOS asks once whether the new binary may read the vault key in your Keychain — choose **Always Allow**.
 
-The app records only copied plain text, ignores empty copies and immediate duplicates, keeps the latest 250 entries, and never syncs data or contacts a network service.
+The app records only copied plain text, ignores empty copies, aggregates repeated copies of the same text into a single entry (see below), keeps the latest 250 entries, and never syncs data or contacts a network service.
+
+## Global shortcut
+
+Open the panel from anywhere with a keyboard shortcut you choose:
+
+- Default is **⇧⌘V**; change it in the panel under *Panel Shortcut* — click **Press keys…** and press any combo (Esc cancels).
+- The shortcut works system-wide (registered via `RegisterEventHotKey`, no Accessibility permission needed) and toggles the panel open/closed.
+- If another app already owns a combo you record, the panel shows a warning so you can pick a different one; the toggle switches the hotkey off entirely.
+
+## Duplicate copies are one entry
+
+Copying the same text again never creates a second row. The existing entry jumps to the top of the list, its timestamp becomes the most recent copy, and its capture count grows (`×3`, `×4`, …). **Press and hold an entry** (or right-click → *Show Copy Times*) to expand it and see every single time that text was copied, newest first.
 
 ## Sensitive copies (passwords)
 
@@ -40,7 +52,7 @@ Sometimes you copy something you don't want stored at all — a password, a one-
 
 | Command | Description |
 | --- | --- |
-| `list [--json] [--limit N]` | List stored entries, newest first |
+| `list [--json] [--limit N]` | List stored entries, newest first (`×N` column = total captures of that text) |
 | `search <text> [--json] [--limit N]` | Fuzzy-search stored entries, best matches first |
 | `get <entry-id>` | Print an entry's full text to stdout |
 | `copy <entry-id> [--sensitive] [--clear-after S] [--no-wait]` | Copy an entry to the clipboard |
@@ -50,13 +62,15 @@ Sometimes you copy something you don't want stored at all — a password, a one-
 | `count` | Number of stored entries |
 | `clear` | Delete every entry |
 
-`--json` emits machine-readable output (`id`, ISO-8601 `createdAt`, full `text`) for scripts and agents.
+`--json` emits machine-readable output (`id`, ISO-8601 `createdAt`, `copyCount`, full `text`) for scripts and agents.
 
 ## Menu-bar app
 
-- Live fuzzy search across history — typo-tolerant subsequence matching (`gthb` finds GitHub links) with ranked results and highlighted hits
+- Open from the status-bar lock icon, or with your global shortcut (default ⇧⌘V)
+- Live fuzzy search across history — typo-tolerant subsequence matching (`gthb` finds GitHub links) with ranked results and highlighted hits; search is focused as soon as the panel opens
 - Click an entry to copy (checkmark confirms); Option-click for a sensitive auto-clearing copy
-- Right-click for Copy / Copy Once / Delete
+- Repeated copies aggregate into one row: it moves to the top, shows the latest timestamp plus a ×N count badge; **press and hold** (or right-click → *Show Copy Times*) to list every capture
+- Right-click for Copy / Copy Once / Show Copy Times / Delete
 - Relative timestamps, entry count, clear-all with confirmation
 - Errors from the encrypted vault are surfaced inline
 

@@ -13,13 +13,81 @@ private struct FilteredEntry: Identifiable {
 
 @main
 struct ClipboardVaultApp: App {
-    @State private var model = VaultViewModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Clipboard Vault", systemImage: "lock.doc") {
-            VaultMenu(model: model)
+        // The real UI lives in a status-bar popover owned by the delegate;
+        // this scene only satisfies the App protocol without opening windows.
+        Settings { EmptyView() }
+    }
+}
+
+/// Owns the status-bar item and its popover so the panel can be toggled
+/// programmatically — which is what makes a global hotkey possible
+/// (SwiftUI's MenuBarExtra cannot be opened from code).
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    nonisolated(unsafe) static private(set) weak var shared: AppDelegate?
+
+    private let model = VaultViewModel()
+    private let popover = NSPopover()
+    private var statusItem: NSStatusItem?
+    private var lastPanelClose = Date.distantPast
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
+        PanelShortcut.registerDefaults()
+
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 380, height: 480)
+        popover.contentViewController = NSHostingController(rootView: VaultMenu(model: model))
+        popover.delegate = self
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = NSImage(systemSymbolName: "lock.doc", accessibilityDescription: "Clipboard Vault")
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.toolTip = "Clipboard Vault"
+        statusItem = item
+
+        GlobalHotKeyCenter.install()
+        applyHotKey()
+    }
+
+    func togglePanel() {
+        if popover.isShown {
+            popover.performClose(nil)
+            return
         }
-        .menuBarExtraStyle(.window)
+        // Transient behavior closes the panel before the status-item action
+        // runs when the user clicks the icon while it is already open; skip
+        // reopening in that case or the panel would never close by clicking.
+        guard Date().timeIntervalSince(lastPanelClose) > 0.2 else { return }
+        guard let button = statusItem?.button else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    /// (Re-)registers the persisted global hotkey. Called at launch and
+    /// whenever the user records a new shortcut or toggles it off.
+    func applyHotKey() {
+        GlobalHotKeyCenter.unregister()
+        guard PanelShortcut.isEnabled else { return }
+        GlobalHotKeyCenter.register(
+            keyCode: UInt32(PanelShortcut.keyCode),
+            modifiers: UInt32(PanelShortcut.carbonModifiers)
+        )
+        GlobalHotKeyCenter.onKeyDown = { [weak self] in self?.togglePanel() }
+    }
+
+    @objc private func statusItemClicked() {
+        togglePanel()
+    }
+}
+
+extension AppDelegate: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        lastPanelClose = Date()
     }
 }
 
@@ -197,6 +265,9 @@ struct VaultMenu: View {
     let model: VaultViewModel
     @State private var query = ""
     @State private var confirmingClear = false
+    @State private var expandedHistoryID: UUID?
+    @FocusState private var searchFocused: Bool
+    @AppStorage(PanelShortcut.enabledKey) private var hotkeyEnabled = true
 
     private var filteredEntries: [FilteredEntry] {
         guard !query.isEmpty else {
@@ -224,10 +295,14 @@ struct VaultMenu: View {
             }
 
             content
-            footer
+            shortcutSettings
         }
         .padding()
         .frame(width: 380, height: 480)
+        .onAppear {
+            // Type-to-search immediately after opening the panel.
+            searchFocused = true
+        }
     }
 
     private var header: some View {
@@ -260,6 +335,7 @@ struct VaultMenu: View {
                 .foregroundStyle(.secondary)
             TextField("Search history", text: $query)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -274,6 +350,34 @@ struct VaultMenu: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var shortcutSettings: some View {
+        DisclosureGroup {
+            Toggle("Global keyboard shortcut", isOn: $hotkeyEnabled)
+                .font(.callout)
+                .onChange(of: hotkeyEnabled) { _, _ in
+                    AppDelegate.shared?.applyHotKey()
+                }
+            HStack {
+                Text("Open panel with")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                ShortcutField {
+                    AppDelegate.shared?.applyHotKey()
+                }
+            }
+            if hotkeyEnabled, PanelShortcut.isEnabled, !GlobalHotKeyCenter.registrationSucceeded {
+                Label("That combo is already taken by another app — record a different one.", systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        } label: {
+            Label("Panel Shortcut", systemImage: "keyboard")
+                .font(.callout.weight(.medium))
+        }
+        .disclosureGroupStyle(.automatic)
     }
 
     @ViewBuilder
@@ -299,9 +403,13 @@ struct VaultMenu: View {
                                 positions: filtered.positions
                             ),
                             copied: model.recentlyCopiedID == filtered.entry.id,
+                            expanded: expandedHistoryID == filtered.entry.id,
                             onCopy: { model.copy(filtered.entry) },
                             onCopyOnce: { model.copyOnce(filtered.entry) },
-                            onDelete: { model.delete(filtered.entry) }
+                            onDelete: { model.delete(filtered.entry) },
+                            onToggleHistory: {
+                                expandedHistoryID = expandedHistoryID == filtered.entry.id ? nil : filtered.entry.id
+                            }
                         )
                     }
                 }
@@ -336,12 +444,6 @@ struct VaultMenu: View {
         return result
     }
 
-    private var footer: some View {
-        Text("\(model.entries.count) entries · AES-GCM encrypted · never leaves this Mac")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-    }
-
     private func resetConfirmationLater() {
         Task {
             try? await Task.sleep(for: .seconds(3))
@@ -356,39 +458,109 @@ private struct EntryRow: View {
     let entry: VaultEntry
     let displayText: AttributedString
     let copied: Bool
+    let expanded: Bool
     let onCopy: () -> Void
     let onCopyOnce: () -> Void
     let onDelete: () -> Void
+    let onToggleHistory: () -> Void
 
     var body: some View {
-        Button(action: handleTap) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(displayText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Text(entry.createdAt, format: .relative(presentation: .named))
+        VStack(alignment: .leading, spacing: 5) {
+            Button(action: handleTap) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayText)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 6) {
+                            Text(entry.createdAt, format: .relative(presentation: .named))
+                            if entry.copyCount > 1 {
+                                Text("×\(entry.copyCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.18), in: Capsule())
+                                    .help("Copied \(entry.copyCount) times — press and hold to see every capture")
+                            }
+                        }
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                        .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
-                    .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
-                    .accessibilityHidden(true)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            // Press-and-hold reveals every time this text was captured;
+            // a quick click still copies.
+            .onLongPressGesture(minimumDuration: 0.35, maximumDistance: 12) {
+                onToggleHistory()
+            }
+
+            if expanded {
+                historyPanel
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .buttonStyle(.plain)
         .contextMenu {
             Button("Copy") { onCopy() }
             Button("Copy Once — auto-clears in 45s") { onCopyOnce() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
+            Button(expanded ? "Hide Copy Times" : "Show Copy Times") { onToggleHistory() }
             Divider()
             Button("Delete", role: .destructive) { onDelete() }
         }
-        .accessibilityLabel("Stored clipboard entry from \(entry.createdAt.formatted(.relative(presentation: .named))). Press to copy.")
-        .accessibilityHint("Option-click or use the context menu for a sensitive copy that clears automatically.")
+        .accessibilityLabel("Stored clipboard entry from \(entry.createdAt.formatted(.relative(presentation: .named))), copied \(entry.copyCount) \(entry.copyCount == 1 ? "time" : "times"). Press to copy.")
+        .accessibilityHint("Option-click or use the context menu for a sensitive copy that clears automatically. Use the context menu to show all copy times.")
+    }
+
+    /// Every capture timestamp for this text, newest first. Shown on
+    /// press-and-hold (or via the context menu).
+    private var historyPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(
+                    "Copied \(entry.copyCount) \(entry.copyCount == 1 ? "time" : "times")",
+                    systemImage: "clock.arrow.circlepath"
+                )
+                .font(.caption.weight(.semibold))
+                Spacer()
+                Button {
+                    onToggleHistory()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide copy times")
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(entry.copyHistory.enumerated()), id: \.offset) { pair in
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(pair.element, format: .dateTime.month().day().hour().minute().second())
+                                .font(.caption2)
+                            if pair.offset == 0 {
+                                Text("latest")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 110)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Plain click copies normally; Option-click performs a sensitive,
