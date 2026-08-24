@@ -11,6 +11,10 @@ private struct FilteredEntry: Identifiable {
     var id: UUID { entry.id }
 }
 
+extension Notification.Name {
+    static let vaultPanelShown = Notification.Name("VaultPanelShown")
+}
+
 @main
 struct ClipboardVaultApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -66,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NotificationCenter.default.post(name: .vaultPanelShown, object: nil)
     }
 
     /// (Re-)registers the persisted global hotkey. Called at launch and
@@ -303,6 +308,9 @@ struct VaultMenu: View {
             // Type-to-search immediately after opening the panel.
             searchFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vaultPanelShown)) { _ in
+            prepareForSearch()
+        }
     }
 
     private var header: some View {
@@ -339,6 +347,7 @@ struct VaultMenu: View {
             if !query.isEmpty {
                 Button {
                     query = ""
+                    searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -448,6 +457,17 @@ struct VaultMenu: View {
         Task {
             try? await Task.sleep(for: .seconds(3))
             confirmingClear = false
+        }
+    }
+
+    private func prepareForSearch() {
+        query = ""
+        confirmingClear = false
+        expandedHistoryID = nil
+        searchFocused = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            searchFocused = true
         }
     }
 }
