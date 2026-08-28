@@ -205,11 +205,7 @@ public actor VaultStore {
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "ClipboardVault", directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(
-            at: base,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try? VaultFileSecurity.prepareDirectory(at: base)
         fileURL = base.appending(path: "vault.bin")
     }
 
@@ -313,5 +309,19 @@ public actor VaultStore {
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
         return SecItemAdd(attributes as CFDictionary, nil)
+    }
+}
+
+enum VaultFileSecurity {
+    static func prepareDirectory(at url: URL, fileManager: FileManager = .default) throws {
+        try fileManager.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: url.path(percentEncoded: false)
+        )
     }
 }

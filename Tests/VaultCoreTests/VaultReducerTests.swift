@@ -114,4 +114,24 @@ final class VaultReducerTests: XCTestCase {
         let decoded = try JSONDecoder().decode([VaultEntry].self, from: data)
         XCTAssertEqual(decoded[0], entry)
     }
+
+    // MARK: - Storage permissions
+
+    func testPrepareDirectoryTightensExistingDirectoryPermissions() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appending(path: "ClipboardVaultTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: directory) }
+
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: directory.path(percentEncoded: false)
+        )
+        try VaultFileSecurity.prepareDirectory(at: directory, fileManager: fileManager)
+
+        let attributes = try fileManager.attributesOfItem(atPath: directory.path(percentEncoded: false))
+        let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(permissions.intValue & 0o777, 0o700)
+    }
 }
