@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BuddyClip — Encrypted clipboard sync over Tailscale</title>
+  <meta name="description" content="Highly experimental tailnet-only, end-to-end encrypted clipboard sync between Linux and Android in Rust." />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #000000;
+      --fg: #ffffff;
+      --coral: #d6544b;
+      --coral-fg: #000000;
+      --muted: #a3a3a3;
+      --dim: #141414;
+      --border: #262626;
+      --border-strong: #404040;
+      --sans: "Chakra Petch", ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      /* 1-bit pixel checkerboard for dithered offset shadows */
+      --dither-shadow-white: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' shape-rendering='crispEdges'%3E%3Crect width='2' height='2' fill='%23ffffff'/%3E%3Crect x='2' y='2' width='2' height='2' fill='%23ffffff'/%3E%3C/svg%3E");
+      --dither-shadow-coral: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' shape-rendering='crispEdges'%3E%3Crect width='2' height='2' fill='%23d6544b'/%3E%3Crect x='2' y='2' width='2' height='2' fill='%23d6544b'/%3E%3C/svg%3E");
+      /* Ordered Bayer horizontal dither hairline */
+      --dither-rule: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' shape-rendering='crispEdges'%3E%3Crect x='0' y='0' width='2' height='2' fill='%23333333'/%3E%3Crect x='4' y='0' width='2' height='2' fill='%23333333'/%3E%3Crect x='2' y='2' width='2' height='2' fill='%23222222'/%3E%3Crect x='6' y='2' width='2' height='2' fill='%23222222'/%3E%3Crect x='0' y='4' width='2' height='2' fill='%23161616'/%3E%3C/svg%3E");
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      border-radius: 0 !important;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      color: var(--fg);
+      background: var(--dim);
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      white-space: nowrap;
+    }
+
+    /* Ambient Bayer dither wash tucked cleanly below header on top-right */
+    #dither-corner {
+      position: absolute;
+      top: 61px;
+      right: 0;
+      width: min(44vw, 420px);
+      height: 240px;
+      pointer-events: none;
+      z-index: 0;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Header (solid black so nav links stay crisp) */
+    header {
+      position: relative;
+      z-index: 3;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav {
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.12rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .brand svg {
+      width: 26px;
+      height: 26px;
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: var(--mono);
+      font-size: 0.84rem;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      transition: color 0.12s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--fg);
+    }
+
+    .nav-links a.nav-dl {
+      color: var(--coral);
+    }
+
+    .nav-links a.nav-dl:hover {
+      color: var(--fg);
+    }
+
+    /* Main */
+    main.wrap {
+      padding-top: 48px;
+      padding-bottom: 56px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4.8vw, 3.15rem);
+      font-weight: 700;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      max-width: 17ch;
+    }
+
+    .lead {
+      margin: 0 0 24px;
+      font-size: 1.04rem;
+      color: #cfcfcf;
+      max-width: 50ch;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .btn {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      padding: 0 18px;
+      font-family: var(--sans);
+      font-size: 0.94rem;
+      font-weight: 700;
+      border: 1px solid var(--fg);
+      cursor: pointer;
+      transition: transform 0.12s ease;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--coral);
+      color: var(--coral-fg);
+      border-color: var(--coral);
+    }
+
+    .btn-primary::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translate(5px, 5px);
+      background-image: var(--dither-shadow-white);
+      background-size: 4px 4px;
+      z-index: -1;
+      transition: transform 0.12s ease;
+    }
+
+    .btn-primary:hover {
+      transform: translate(-1px, -1px);
+    }
+
+    .btn-primary:hover::after {
+      transform: translate(7px, 7px);
+    }
+
+    .btn-outline {
+      background: var(--bg);
+      color: var(--fg);
+      border-color: var(--border-strong);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--fg);
+    }
+
+    /* Experimental notice with dithered coral left edge + shadow */
+    .experimental {
+      position: relative;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      border: 1px solid var(--coral);
+      background: var(--bg);
+    }
+
+    .experimental::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translate(5px, 5px);
+      background-image: var(--dither-shadow-coral);
+      background-size: 4px 4px;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    #dither-warn {
+      display: block;
+      width: 24px;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .experimental-body {
+      padding: 13px 16px;
+      font-size: 0.91rem;
+      color: #d4d4d4;
+    }
+
+    .experimental-body strong {
+      color: var(--coral);
+      font-weight: 700;
+    }
+
+    /* Dithered section divider */
+    .dither-rule {
+      height: 10px;
+      margin: 40px 0 32px;
+      background-image: var(--dither-rule);
+      background-repeat: repeat-x;
+      background-size: 8px 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Section header */
+    .sec-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 1.32rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .toggle {
+      display: inline-flex;
+      border: 1px solid var(--border-strong);
+      background: var(--bg);
+    }
+
+    .toggle button {
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      padding: 6px 12px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+
+    .toggle button + button {
+      border-left: 1px solid var(--border-strong);
+    }
+
+    .toggle button[aria-pressed="true"] {
+      background: var(--coral);
+      color: var(--coral-fg);
+      font-weight: 500;
+    }
+
+    /* Dithered packet flow canvas */
+    .flow-stage {
+      border: 1px solid var(--border);
+      background: var(--bg);
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+
+    #flow-dither {
+      display: block;
+      width: 100%;
+      height: 72px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .flow-labels {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .flow-labels span {
+      padding: 6px 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .flow-labels span:nth-child(2) {
+      text-align: center;
+      color: var(--coral);
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    .flow-labels span:nth-child(3) {
+      text-align: right;
+    }
+
+    /* Minimal 3-column flow breakdown */
+    .flow-cols {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px;
+    }
+
+    .flow-col h3 {
+      margin: 0 0 5px;
+      font-size: 0.98rem;
+      font-weight: 700;
+    }
+
+    .flow-col p {
+      margin: 0;
+      font-size: 0.89rem;
+      color: #bdbdbd;
+    }
+
+    /* Install split — aligned box heights */
+    .install-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .install-col {
+      min-width: 0;
+    }
+
+    .install-col h3 {
+      margin: 0 0 10px;
+      font-size: 0.98rem;
+      font-weight: 700;
+    }
+
+    .install-col p {
+      margin: 10px 0 0;
+      font-size: 0.87rem;
+      color: var(--muted);
+    }
+
+    .cmd-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 46px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg);
+      padding: 0 8px 0 12px;
+      min-width: 0;
+    }
+
+    .cmd-box pre {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--fg);
+      white-space: pre;
+      scrollbar-width: none;
+    }
+
+    .cmd-box pre::-webkit-scrollbar {
+      display: none;
+    }
+
+    .copy-btn {
+      flex-shrink: 0;
+      background: var(--dim);
+      color: var(--fg);
+      border: 1px solid var(--border-strong);
+      height: 30px;
+      padding: 0 10px;
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover,
+    .copy-btn.copied {
+      background: var(--coral);
+      color: var(--coral-fg);
+      border-color: var(--coral);
+    }
+
+    .apk-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 46px;
+      border: 1px solid var(--border-strong);
+      padding: 0 14px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--fg);
+      white-space: nowrap;
+      transition: border-color 0.12s ease, color 0.12s ease;
+    }
+
+    .apk-link:hover {
+      border-color: var(--coral);
+      color: var(--coral);
+    }
+
+    .note-line {
+      margin-top: 20px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.77rem;
+      color: var(--muted);
+    }
+
+    /* Bottom dither horizon */
+    #dither-bottom {
+      display: block;
+      width: 100%;
+      height: 20px;
+      margin-top: 40px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    @media (max-width: 720px) {
+      #dither-corner {
+        width: 148px;
+        height: 112px;
+        opacity: 0.55;
+      }
+
+      .flow-cols,
+      .install-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 18px;
+      }
+
+      .flow-labels span {
+        padding: 6px 8px;
+        font-size: 0.68rem;
+      }
+    }
+
+    @media (max-width: 500px) {
+      #dither-corner {
+        display: none;
+      }
+
+      .wrap {
+        padding: 0 16px;
+      }
+
+      main.wrap {
+        padding-top: 32px;
+        padding-bottom: 40px;
+      }
+
+      .actions .btn {
+        width: 100%;
+      }
+
+      .toggle {
+        width: 100%;
+      }
+
+      .toggle button {
+        flex: 1;
+        text-align: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="dither-corner" aria-hidden="true"></canvas>
+
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="#">
+        <svg viewBox="0 0 108 108" aria-hidden="true">
+          <rect width="108" height="108" fill="#D6544B" />
+          <path d="M34,34 L84,57 L34,80 L43,60.5 L62,57 L43,53.5 Z" fill="#000000" fill-opacity="0.22" />
+          <path d="M31,31 L81,54 L31,77 L40,57.5 L59,54 L40,50.5 Z" fill="#000000" />
+        </svg>
+        <span>BuddyClip</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="https://github.com/OxFrancesco/BuddyClip" target="_blank" rel="noopener">GitHub</a>
+        <a class="nav-dl" href="https://github.com/OxFrancesco/BuddyClip/releases/download/v0.1.3/BuddyClip-v0.1.3-android-arm64.apk">v0.1.3 APK</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>Encrypted clipboard sync over Tailscale.</h1>
+    <p class="lead">
+      Shared Rust core for Linux and Android. Tailnet-only, end-to-end encrypted, RAM-only, no cloud.
+    </p>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="#install">Install Linux + Android</a>
+      <a class="btn btn-outline" href="https://github.com/OxFrancesco/BuddyClip" target="_blank" rel="noopener">Source on GitHub</a>
+    </div>
+
+    <aside class="experimental" aria-label="Experimental warning">
+      <canvas id="dither-warn" aria-hidden="true"></canvas>
+      <div class="experimental-body">
+        <strong>Highly experimental (v0.1.3).</strong>
+        Personal tool—not security-audited, protocol and CLI may break. Tested on Wayland + Android 15–16 (ARM64).
+      </div>
+    </aside>
+
+    <div class="dither-rule" aria-hidden="true"></div>
+
+    <section aria-labelledby="how-heading">
+      <div class="sec-head">
+        <h2 id="how-heading">How it works</h2>
+        <div class="toggle" role="group" aria-label="Sync direction">
+          <button type="button" data-dir="pc-to-phone" aria-pressed="true">PC &rarr; Android</button>
+          <button type="button" data-dir="phone-to-pc" aria-pressed="false">Android &rarr; PC</button>
+        </div>
+      </div>
+
+      <div class="flow-stage">
+        <canvas id="flow-dither" aria-hidden="true"></canvas>
+        <div class="flow-labels">
+          <span id="lbl-left">wl-paste</span>
+          <span>Tailnet E2EE</span>
+          <span id="lbl-right">0-tap write</span>
+        </div>
+      </div>
+
+      <div class="flow-cols">
+        <div class="flow-col">
+          <h3>Linux PC</h3>
+          <p id="copy-pc">Watches Ctrl+C for text and images, skipping password-manager clips.</p>
+        </div>
+        <div class="flow-col">
+          <h3>Tailnet + E2EE</h3>
+          <p id="copy-mid">Tailscale IPs only. Ephemeral X25519 + 256-bit PSK auth over WireGuard.</p>
+        </div>
+        <div class="flow-col">
+          <h3>Android</h3>
+          <p id="copy-android">Rust JNI foreground service writes straight to your clipboard in 0 taps.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="dither-rule" aria-hidden="true"></div>
+
+    <section id="install" aria-labelledby="install-heading">
+      <div class="sec-head">
+        <h2 id="install-heading">Install</h2>
+      </div>
+
+      <div class="install-grid">
+        <div class="install-col">
+          <h3>Linux PC</h3>
+          <div class="cmd-box">
+            <pre id="cmd-linux">curl -fsSL https://raw.githubusercontent.com/OxFrancesco/BuddyClip/main/install.sh | bash</pre>
+            <button class="copy-btn" type="button" data-copy="cmd-linux">Copy</button>
+          </div>
+          <p>Run <code>buddyclip init</code>, then <code>buddyclip install-service</code>.</p>
+        </div>
+
+        <div class="install-col">
+          <h3>Android</h3>
+          <a class="apk-link" href="https://github.com/OxFrancesco/BuddyClip/releases/download/v0.1.3/BuddyClip-v0.1.3-android-arm64.apk">
+            Download v0.1.3 APK (ARM64)
+          </a>
+          <p>Install APK, tap <strong>Scan QR</strong>, scan your terminal.</p>
+        </div>
+      </div>
+
+      <div class="note-line">
+        RAM-only (25 items / 64 MiB) &middot; Password managers skipped &middot; Tagged Tailscale phones need TCP <code>9455</code>
+      </div>
+    </section>
+
+    <canvas id="dither-bottom" aria-hidden="true"></canvas>
+  </main>
+
+  <script>
+    (function () {
+      // 4x4 Bayer ordered dithering threshold matrix
+      var BAYER = [
+        [0,  8,  2, 10],
+        [12, 4, 14,  6],
+        [3, 11,  1,  9],
+        [15, 7, 13,  5]
+      ];
+      var CORAL = [214, 84, 75];
+      var WHITE = [255, 255, 255];
+
+      function bayerThreshold(x, y) {
+        return (BAYER[y & 3][x & 3] + 0.5) / 16;
+      }
+
+      // 1. Top-right ambient corner Bayer dither wash (sits cleanly below header)
+      function renderCorner() {
+        var c = document.getElementById("dither-corner");
+        if (!c || c.clientWidth === 0) return;
+        var px = 3;
+        var w = Math.max(1, Math.floor(c.clientWidth / px));
+        var h = Math.max(1, Math.floor(c.clientHeight / px));
+        c.width = w;
+        c.height = h;
+        var ctx = c.getContext("2d");
+        var img = ctx.createImageData(w, h);
+        var d = img.data;
+
+        for (var y = 0; y < h; y++) {
+          var ny = 1 - y / h;
+          for (var x = 0; x < w; x++) {
+            var nx = x / w;
+            var raw = Math.pow(nx * ny, 1.65) * 0.58;
+            if (raw > bayerThreshold(x, y)) {
+              var i = (y * w + x) * 4;
+              var useCoral = ((x + y) % 5 === 0) || (raw > 0.34);
+              var col = useCoral ? CORAL : WHITE;
+              d[i] = col[0];
+              d[i + 1] = col[1];
+              d[i + 2] = col[2];
+              d[i + 3] = useCoral ? 185 : 115;
+            }
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+
+      // 2. Experimental banner left-edge vertical Bayer coral dissolve
+      function renderWarnEdge() {
+        var c = document.getElementById("dither-warn");
+        if (!c || c.clientWidth === 0) return;
+        var px = 2;
+        var w = Math.max(1, Math.floor(c.clientWidth / px));
+        var h = Math.max(1, Math.floor(c.clientHeight / px));
+        c.width = w;
+        c.height = h;
+        var ctx = c.getContext("2d");
+        var img = ctx.createImageData(w, h);
+        var d = img.data;
+
+        for (var y = 0; y < h; y++) {
+          for (var x = 0; x < w; x++) {
+            var intensity = Math.pow(1 - x / w, 1.25);
+            if (intensity > bayerThreshold(x, y)) {
+              var i = (y * w + x) * 4;
+              d[i] = CORAL[0];
+              d[i + 1] = CORAL[1];
+              d[i + 2] = CORAL[2];
+              d[i + 3] = 255;
+            }
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+
+      // 3. Bottom dither horizon strip
+      function renderBottomBand() {
+        var c = document.getElementById("dither-bottom");
+        if (!c || c.clientWidth === 0) return;
+        var px = 2;
+        var w = Math.max(1, Math.floor(c.clientWidth / px));
+        var h = Math.max(1, Math.floor(c.clientHeight / px));
+        c.width = w;
+        c.height = h;
+        var ctx = c.getContext("2d");
+        var img = ctx.createImageData(w, h);
+        var d = img.data;
+
+        for (var y = 0; y < h; y++) {
+          var vFade = 1 - y / h;
+          for (var x = 0; x < w; x++) {
+            var wave = 0.5 + 0.5 * Math.sin((x / w) * Math.PI);
+            var val = vFade * vFade * (0.28 + 0.32 * wave);
+            if (val > bayerThreshold(x, y)) {
+              var i = (y * w + x) * 4;
+              var accent = Math.abs(x / w - 0.5) < 0.16 && y < 4;
+              var col = accent ? CORAL : WHITE;
+              d[i] = col[0];
+              d[i + 1] = col[1];
+              d[i + 2] = col[2];
+              d[i + 3] = accent ? 225 : 90;
+            }
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+
+      // 4. Interactive directional Bayer 4x4 packet flow strip
+      var direction = 1; // 1 = PC -> Android, -1 = Android -> PC
+      var phase = 0.72;  // crisp directional frame-0 snapshot
+      var hoverX = -1;
+      var flowCanvas = document.getElementById("flow-dither");
+      var flowCtx = flowCanvas ? flowCanvas.getContext("2d") : null;
+      var flowW = 0, flowH = 0, flowImg = null;
+
+      function sizeFlow() {
+        if (!flowCanvas) return;
+        var px = window.innerWidth < 500 ? 3 : 2;
+        flowW = Math.max(1, Math.floor(flowCanvas.clientWidth / px));
+        flowH = Math.max(1, Math.floor(flowCanvas.clientHeight / px));
+        flowCanvas.width = flowW;
+        flowCanvas.height = flowH;
+        flowImg = flowCtx.createImageData(flowW, flowH);
+      }
+
+      // Asymmetric directional comet envelope (sharp leading edge, dithered trailing wake)
+      function packetEnvelope(nx, pos, dir) {
+        var delta = (nx - pos) * dir; // >0 ahead of head, <0 behind in wake
+        if (delta > 0) {
+          return Math.exp(-delta * delta * 1400);
+        }
+        return Math.exp(-delta * delta * 85);
+      }
+
+      function drawFlow() {
+        if (!flowImg || !flowCtx) return;
+        var d = flowImg.data;
+        d.fill(0);
+
+        var p1 = ((phase % 1) + 1) % 1;
+        var p2 = (((phase + 0.5) % 1) + 1) % 1;
+
+        for (var y = 0; y < flowH; y++) {
+          var ny = (y + 0.5) / flowH;
+          var dyCenter = Math.abs(ny - 0.5) * 2;
+
+          for (var x = 0; x < flowW; x++) {
+            var nx = (x + 0.5) / flowW;
+
+            var ripple = 0.5 + 0.14 * Math.sin(nx * 14 - phase * Math.PI * 2 * direction);
+            var ribbon = Math.max(0, 1 - Math.abs(ny - ripple) * 4.4) * 0.36;
+
+            // Central E2EE encrypted core
+            var core = Math.max(0, 1 - Math.abs(nx - 0.5) * 4.6) * Math.max(0, 1 - dyCenter * 1.15) * 0.62;
+
+            // Directional traveling packets
+            var pkt = (packetEnvelope(nx, p1, direction) + packetEnvelope(nx, p2, direction)) * Math.max(0, 1 - dyCenter * 1.25) * 0.96;
+
+            // Pointer hover bloom
+            var boost = 0;
+            if (hoverX >= 0) {
+              var dh = nx - hoverX;
+              boost = Math.exp(-dh * dh * 130) * (1 - dyCenter * 0.9) * 0.45;
+            }
+
+            // Endpoint terminals
+            var ends = (nx < 0.035 || nx > 0.965) ? (1 - dyCenter * 0.85) * 0.52 : 0;
+
+            var energy = Math.min(1, ribbon + core + pkt + boost + ends);
+            if (energy > bayerThreshold(x, y)) {
+              var i = (y * flowW + x) * 4;
+              var isCoral = (pkt > 0.24) || (core > 0.22 && ((x + y) & 1) === 0) || (boost > 0.2);
+              var col = isCoral ? CORAL : WHITE;
+              d[i] = col[0];
+              d[i + 1] = col[1];
+              d[i + 2] = col[2];
+              d[i + 3] = isCoral ? 245 : 140;
+            }
+          }
+        }
+        flowCtx.putImageData(flowImg, 0, 0);
+      }
+
+      if (flowCanvas) {
+        flowCanvas.addEventListener("pointermove", function (e) {
+          var rect = flowCanvas.getBoundingClientRect();
+          hoverX = (e.clientX - rect.left) / Math.max(1, rect.width);
+        });
+        flowCanvas.addEventListener("pointerleave", function () {
+          hoverX = -1;
+        });
+      }
+
+      // Direction toggle copy
+      var copyMap = {
+        "pc-to-phone": {
+          dir: 1,
+          lblLeft: "wl-paste",
+          lblRight: "0-tap write",
+          pc: "Watches Ctrl+C for text and images, skipping password-manager clips.",
+          mid: "Tailscale IPs only. Ephemeral X25519 + 256-bit PSK auth over WireGuard.",
+          android: "Rust JNI foreground service writes straight to your clipboard in 0 taps."
+        },
+        "phone-to-pc": {
+          dir: -1,
+          lblLeft: "wl-copy",
+          lblRight: "1-tap send",
+          pc: "Authenticates each frame and writes text or PNG straight to Wayland/X11.",
+          mid: "Same Tailscale-only TCP tunnel with BLAKE3 session keys and replay protection.",
+          android: "1 tap from text selection, Share sheet, Quick Settings, or notification."
+        }
+      };
+
+      var buttons = document.querySelectorAll(".toggle button");
+      buttons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var cfg = copyMap[btn.getAttribute("data-dir")];
+          if (!cfg) return;
+          direction = cfg.dir;
+          buttons.forEach(function (b) {
+            b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+          });
+          document.getElementById("lbl-left").textContent = cfg.lblLeft;
+          document.getElementById("lbl-right").textContent = cfg.lblRight;
+          document.getElementById("copy-pc").textContent = cfg.pc;
+          document.getElementById("copy-mid").textContent = cfg.mid;
+          document.getElementById("copy-android").textContent = cfg.android;
+          drawFlow();
+        });
+      });
+
+      // Copy button
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var el = document.getElementById(btn.getAttribute("data-copy"));
+          if (!el) return;
+          var text = el.textContent.trim();
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function () {});
+          }
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(function () {
+            btn.textContent = "Copy";
+            btn.classList.remove("copied");
+          }, 1500);
+        });
+      });
+
+      function renderAllStatic() {
+        renderCorner();
+        renderWarnEdge();
+        renderBottomBand();
+        sizeFlow();
+        drawFlow();
+      }
+
+      renderAllStatic();
+      window.addEventListener("resize", renderAllStatic);
+
+      var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!reduced) {
+        var last = performance.now();
+        function tick(now) {
+          var dt = Math.min(0.05, (now - last) / 1000);
+          last = now;
+          phase += dt * 0.28 * direction;
+          drawFlow();
+          requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      }
+    })();
+  </script>
+</body>
+</html>
