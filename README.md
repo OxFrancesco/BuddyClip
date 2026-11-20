@@ -4,7 +4,7 @@
 
 A fast, zero-cloud, **end-to-end encrypted universal clipboard** built in **Rust** for **Linux PC (Wayland / X11)** and **Android**, working strictly over your private **Tailscale tailnet**.
 
-**Landing page:** [oxfrancesco.github.io/BuddyClip](https://oxfrancesco.github.io/BuddyClip/)
+**Landing page:** [clip.buddytools.org](https://clip.buddytools.org)
 
 Both the Linux daemon and the Android app share the exact same Rust core ([`buddyclip-core`](crates/buddyclip-core)) — compiled natively to a 16KB-page-aligned ARM64 JNI library (`libbuddyclip_android.so`) for Android.
 
