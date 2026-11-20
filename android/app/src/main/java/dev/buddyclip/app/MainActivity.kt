@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPasteGo
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.LinkOff
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -482,6 +481,7 @@ private fun BuddyClipScreen(
     if (showSettingsDialog) {
         SettingsDialog(
             config = config,
+            fingerprint = connection.fingerprint,
             onUpdate = { updated ->
                 SyncRepository.updateConfig(updated, restartServiceIfPaired = false)
             },
@@ -511,12 +511,21 @@ private fun ConnectionHeroCard(
     }
 
     val statusLabel = when (connection.phase) {
-        ConnectionPhase.CONNECTED -> "Connected over Tailnet"
-        ConnectionPhase.CONNECTING -> "Connecting over Tailnet…"
+        ConnectionPhase.CONNECTED -> "Connected"
+        ConnectionPhase.CONNECTING -> "Connecting…"
         ConnectionPhase.DISCONNECTED -> "Reconnecting…"
-        ConnectionPhase.ERROR -> "Connection Error"
-        ConnectionPhase.STOPPED -> "Sync Paused"
-        ConnectionPhase.UNPAIRED -> "Not Paired Yet"
+        ConnectionPhase.ERROR -> "Disconnected"
+        ConnectionPhase.STOPPED -> "Paused"
+        ConnectionPhase.UNPAIRED -> "Not Paired"
+    }
+
+    val peerName = config.hostName.ifBlank { "PC" }
+    val subtitle = when {
+        !config.isPaired -> "Scan your PC QR code to pair"
+        connection.phase == ConnectionPhase.CONNECTED -> peerName
+        connection.phase == ConnectionPhase.STOPPED -> peerName
+        connection.phase == ConnectionPhase.CONNECTING -> peerName
+        else -> "Waiting for $peerName"
     }
 
     Card(
@@ -547,10 +556,10 @@ private fun ConnectionHeroCard(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = connection.detail,
+                            text = subtitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -563,47 +572,7 @@ private fun ConnectionHeroCard(
                 }
             }
 
-            if (config.isPaired) {
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Rounded.Lock,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = "E2EE ${connection.fingerprint.ifBlank { "Active" }}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontFamily = FontFamily.Monospace,
-                            )
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                    ) {
-                        Text(
-                            text = "${config.host}:${config.port}",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        )
-                    }
-                }
-            } else {
+            if (!config.isPaired) {
                 Spacer(Modifier.height(14.dp))
                 Text(
                     text = "Run `buddyclip init` on your PC to generate a 256-bit key and QR code. Traffic stays strictly inside your Tailscale tailnet.",
@@ -1005,6 +974,7 @@ private fun PairingDialog(
 @Composable
 private fun SettingsDialog(
     config: BuddyClipConfig,
+    fingerprint: String,
     onUpdate: (BuddyClipConfig) -> Unit,
     onUnpair: () -> Unit,
     onDismiss: () -> Unit,
@@ -1046,6 +1016,22 @@ private fun SettingsDialog(
                 )
                 if (config.isPaired) {
                     HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Paired PC: ${config.hostName.ifBlank { config.host }} (${config.host}:${config.port})",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (fingerprint.isNotBlank()) {
+                            Text(
+                                text = "Key fingerprint: $fingerprint",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     OutlinedButton(
                         onClick = onUnpair,
                         modifier = Modifier.fillMaxWidth(),
