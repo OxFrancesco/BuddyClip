@@ -21,6 +21,8 @@ pub struct ClientConfig {
     pub device_name: String,
     pub platform: String,
     pub policy: TailnetPolicy,
+    /// Ignore/skip any server clips with `created_at_ms <= initial_cleared_before_ms`.
+    pub initial_cleared_before_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -40,11 +42,15 @@ pub enum ClientEvent {
     ClipSent {
         clip_id: String,
     },
+    HistoryCleared {
+        cleared_at_ms: u64,
+    },
     Error(String),
 }
 
 enum ControlCommand {
     SendClip(ClipItem),
+    ClearHistory(u64),
     RequestSync,
     ReconnectNow,
 }
@@ -90,8 +96,16 @@ impl SyncClientHandle {
     }
 
     pub async fn clear_history(&self) {
-        let mut h = self.history.lock().await;
-        h.clear();
+        let ts = now_millis();
+        {
+            let mut h = self.history.lock().await;
+            h.clear_up_to(ts);
+        }
+        let _ = self.cmd_tx.send(ControlCommand::ClearHistory(ts)).await;
+    }
+
+    pub fn try_clear_history(&self, cleared_at_ms: u64) {
+        let _ = self.cmd_tx.try_send(ControlCommand::ClearHistory(cleared_at_ms));
     }
 
     pub fn shutdown(&self) {
@@ -108,7 +122,9 @@ pub fn spawn_sync_client(
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlCommand>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let reconnect_notify = Arc::new(Notify::new());
-    let history = Arc::new(Mutex::new(ClipRingBuffer::default()));
+    let history = Arc::new(Mutex::new(
+        ClipRingBuffer::default().with_cleared_before(config.initial_cleared_before_ms),
+    ));
 
     let handle = SyncClientHandle {
         cmd_tx,
@@ -139,18 +155,33 @@ async fn run_client_loop(
 ) {
     let mut backoff_secs: u64 = 1;
     let mut pending_outbox: Option<ClipItem> = None;
+    let mut pending_clear_ms: Option<u64> = None;
 
     loop {
         if *shutdown_rx.borrow() {
             break;
         }
 
-        // Drain any queued clips while offline, retaining the freshest clip to flush on connect.
+        // Drain any queued commands while offline.
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if let ControlCommand::SendClip(item) = cmd {
-                let mut h = history.lock().await;
-                h.insert(item.clone());
-                pending_outbox = Some(item);
+            match cmd {
+                ControlCommand::SendClip(item) => {
+                    let mut h = history.lock().await;
+                    h.insert(item.clone());
+                    pending_outbox = Some(item);
+                }
+                ControlCommand::ClearHistory(ts) => {
+                    let mut h = history.lock().await;
+                    h.clear_up_to(ts);
+                    if pending_outbox
+                        .as_ref()
+                        .is_some_and(|i| i.meta.created_at_ms <= ts)
+                    {
+                        pending_outbox = None;
+                    }
+                    pending_clear_ms = Some(pending_clear_ms.map_or(ts, |prev| prev.max(ts)));
+                }
+                ControlCommand::RequestSync | ControlCommand::ReconnectNow => {}
             }
         }
 
@@ -166,6 +197,7 @@ async fn run_client_loop(
             &history,
             &event_tx,
             &mut pending_outbox,
+            &mut pending_clear_ms,
         )
         .await
         {
@@ -206,6 +238,18 @@ async fn run_client_loop(
                         pending_outbox = Some(item);
                         backoff_secs = 1;
                     }
+                    ControlCommand::ClearHistory(ts) => {
+                        let mut h = history.lock().await;
+                        h.clear_up_to(ts);
+                        if pending_outbox
+                            .as_ref()
+                            .is_some_and(|i| i.meta.created_at_ms <= ts)
+                        {
+                            pending_outbox = None;
+                        }
+                        pending_clear_ms = Some(pending_clear_ms.map_or(ts, |prev| prev.max(ts)));
+                        backoff_secs = 1;
+                    }
                     ControlCommand::ReconnectNow | ControlCommand::RequestSync => {
                         backoff_secs = 1;
                     }
@@ -222,6 +266,7 @@ async fn connect_and_run_session(
     history: &Arc<Mutex<ClipRingBuffer>>,
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     pending_outbox: &mut Option<ClipItem>,
+    pending_clear_ms: &mut Option<u64>,
 ) -> Result<(), String> {
     let addr = resolve_tailnet_addr(&config.host, config.port, config.policy)
         .await
@@ -277,14 +322,29 @@ async fn connect_and_run_session(
         key_fingerprint: config.key.fingerprint(),
     });
 
-    // Request missed recent clips from server
-    let known_ids: Vec<String> = {
+    // Flush any pending history clear before requesting sync so cleared items are not replayed
+    if let Some(ts) = pending_clear_ms.take() {
+        let clear_msg = WireMessage::HistoryClear { cleared_at_ms: ts }
+            .encode()
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = writer.write_frame(&clear_msg).await {
+            *pending_clear_ms = Some(ts);
+            return Err(e.to_string());
+        }
+    }
+
+    // Request missed recent clips newer than our clear watermark from server
+    let (known_ids, since_ms): (Vec<String>, u64) = {
         let h = history.lock().await;
-        h.items().map(|c| c.meta.id.clone()).collect()
+        (
+            h.items().map(|c| c.meta.id.clone()).collect(),
+            h.cleared_before_ms(),
+        )
     };
     let sync_req = WireMessage::SyncRequest(SyncRequest {
         known_clip_ids: known_ids,
         limit: 10,
+        since_ms,
     });
     writer
         .write_frame(&sync_req.encode().map_err(|e| e.to_string())?)
@@ -335,14 +395,31 @@ async fn connect_and_run_session(
                         }
                         let _ = event_tx.send(ClientEvent::ClipSent { clip_id });
                     }
+                    Some(ControlCommand::ClearHistory(ts)) => {
+                        {
+                            let mut h = history.lock().await;
+                            h.clear_up_to(ts);
+                        }
+                        let encoded = WireMessage::HistoryClear { cleared_at_ms: ts }
+                            .encode()
+                            .map_err(|e| e.to_string())?;
+                        if let Err(e) = writer.write_frame(&encoded).await {
+                            *pending_clear_ms = Some(ts);
+                            return Err(format!("clear history send failed: {e}"));
+                        }
+                    }
                     Some(ControlCommand::RequestSync) => {
-                        let known_ids: Vec<String> = {
+                        let (known_ids, since_ms): (Vec<String>, u64) = {
                             let h = history.lock().await;
-                            h.items().map(|c| c.meta.id.clone()).collect()
+                            (
+                                h.items().map(|c| c.meta.id.clone()).collect(),
+                                h.cleared_before_ms(),
+                            )
                         };
                         let req = WireMessage::SyncRequest(SyncRequest {
                             known_clip_ids: known_ids,
                             limit: 10,
+                            since_ms,
                         }).encode().map_err(|e| e.to_string())?;
                         writer.write_frame(&req).await.map_err(|e| e.to_string())?;
                     }
@@ -381,6 +458,13 @@ async fn connect_and_run_session(
                     }
                     WireMessage::Pong { .. } => {
                         awaiting_pong = false;
+                    }
+                    WireMessage::HistoryClear { cleared_at_ms } => {
+                        {
+                            let mut h = history.lock().await;
+                            h.clear_up_to(cleared_at_ms);
+                        }
+                        let _ = event_tx.send(ClientEvent::HistoryCleared { cleared_at_ms });
                     }
                     WireMessage::Error { message } => {
                         let _ = event_tx.send(ClientEvent::Error(message));

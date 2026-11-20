@@ -26,6 +26,7 @@ data class BuddyClipConfig(
     val autoSyncOnOpen: Boolean = true,
     val autoWriteClipboard: Boolean = true,
     val showClipNotification: Boolean = true,
+    val historyClearedAtMs: Long = 0L,
 ) {
     val isPaired: Boolean
         get() = host.isNotBlank() && keyBase64.isNotBlank() && port in 1..65535

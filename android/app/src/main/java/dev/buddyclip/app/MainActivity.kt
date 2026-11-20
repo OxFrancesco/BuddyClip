@@ -14,9 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,8 +27,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -360,10 +359,6 @@ private fun BuddyClipScreen(
                 }
 
                 item {
-                    SeamlessShortcutsTipCard()
-                }
-
-                item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -503,13 +498,6 @@ private fun ConnectionHeroCard(
     onScanQr: () -> Unit,
     onManualPair: () -> Unit,
 ) {
-    val dotColor = when (connection.phase) {
-        ConnectionPhase.CONNECTED -> Color(0xFF22C55E)
-        ConnectionPhase.CONNECTING -> Color(0xFFF59E0B)
-        ConnectionPhase.ERROR, ConnectionPhase.DISCONNECTED -> Color(0xFFEF4444)
-        else -> MaterialTheme.colorScheme.outline
-    }
-
     val statusLabel = when (connection.phase) {
         ConnectionPhase.CONNECTED -> "Connected"
         ConnectionPhase.CONNECTING -> "Connecting…"
@@ -541,28 +529,19 @@ private fun ConnectionHeroCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Box(
-                        modifier = Modifier
-                            .size(11.dp)
-                            .clip(CircleShape)
-                            .background(dotColor),
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = statusLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
                     )
-                    Spacer(Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = statusLabel,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (config.isPaired) {
                     Switch(
@@ -988,7 +967,10 @@ private fun SettingsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Settings") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     value = deviceName,
                     onValueChange = { deviceName = it },
@@ -1014,6 +996,8 @@ private fun SettingsDialog(
                     checked = showNotif,
                     onCheckedChange = { showNotif = it },
                 )
+                HorizontalDivider()
+                SeamlessShortcutsTipCard()
                 if (config.isPaired) {
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

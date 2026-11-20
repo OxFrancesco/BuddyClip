@@ -11,6 +11,7 @@ const TAG_SYNC_REQUEST: u8 = 0x04;
 const TAG_PING: u8 = 0x05;
 const TAG_PONG: u8 = 0x06;
 const TAG_ERROR: u8 = 0x07;
+const TAG_HISTORY_CLEAR: u8 = 0x08;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -42,6 +43,8 @@ pub struct PeerIdentity {
 pub struct SyncRequest {
     pub known_clip_ids: Vec<String>,
     pub limit: usize,
+    #[serde(default)]
+    pub since_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +56,7 @@ pub enum WireMessage {
     Ping { ts_ms: u64 },
     Pong { ts_ms: u64 },
     Error { message: String },
+    HistoryClear { cleared_at_ms: u64 },
 }
 
 impl WireMessage {
@@ -97,6 +101,12 @@ impl WireMessage {
                     message: &'a str,
                 }
                 encode_json(TAG_ERROR, &ErrBody { message })
+            }
+            WireMessage::HistoryClear { cleared_at_ms } => {
+                let mut out = Vec::with_capacity(9);
+                out.push(TAG_HISTORY_CLEAR);
+                out.extend_from_slice(&cleared_at_ms.to_be_bytes());
+                Ok(out)
             }
         }
     }
@@ -155,6 +165,13 @@ impl WireMessage {
                 }
                 let e: ErrBody = serde_json::from_slice(rest)?;
                 Ok(WireMessage::Error { message: e.message })
+            }
+            TAG_HISTORY_CLEAR => {
+                if rest.len() != 8 {
+                    return Err(ProtocolError::Truncated);
+                }
+                let cleared_at_ms = u64::from_be_bytes(rest.try_into().unwrap());
+                Ok(WireMessage::HistoryClear { cleared_at_ms })
             }
             other => Err(ProtocolError::UnknownTag(other)),
         }

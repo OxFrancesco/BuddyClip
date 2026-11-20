@@ -168,6 +168,32 @@ impl DaemonState {
         }
     }
 
+    async fn handle_history_clear(&self, cleared_at_ms: u64, exclude_conn_id: Option<u64>) {
+        {
+            let mut h = self.history.lock().await;
+            h.clear_up_to(cleared_at_ms);
+        }
+        info!(cleared_at_ms, "cleared in-memory clipboard history across peers");
+
+        let msg = WireMessage::HistoryClear { cleared_at_ms };
+        let senders: Vec<(u64, mpsc::Sender<WireMessage>)> = {
+            let peers = self.peers.lock().await;
+            peers
+                .iter()
+                .filter(|(id, _)| Some(**id) != exclude_conn_id)
+                .map(|(id, peer)| (*id, peer.tx.clone()))
+                .collect()
+        };
+        for (_, tx) in senders {
+            let _ = tx.try_send(msg.clone());
+        }
+
+        let outbound = self.outbound_clients.lock().await;
+        for client in outbound.iter() {
+            client.try_clear_history(cleared_at_ms);
+        }
+    }
+
     async fn status_snapshot(&self) -> DaemonStatus {
         let connected_peers = {
             let peers = self.peers.lock().await;
@@ -253,6 +279,7 @@ pub async fn run_daemon(
                     device_name: config.device_name.clone(),
                     platform: "linux".into(),
                     policy,
+                    initial_cleared_before_ms: 0,
                 },
                 ev_tx,
             );
@@ -263,6 +290,9 @@ pub async fn run_daemon(
                     match ev {
                         ClientEvent::ClipReceived(item) => {
                             st.handle_remote_clip(item, None).await;
+                        }
+                        ClientEvent::HistoryCleared { cleared_at_ms } => {
+                            st.handle_history_clear(cleared_at_ms, None).await;
                         }
                         ClientEvent::Connected { peer_name, peer_addr, .. } => {
                             info!(%peer_name, %peer_addr, "connected to outbound peer daemon");
@@ -454,7 +484,9 @@ async fn handle_client_connection(
                         let history = state.history.lock().await;
                         history
                             .items()
-                            .filter(|c| !known.contains(&c.meta.id))
+                            .filter(|c| {
+                                c.meta.created_at_ms > req.since_ms && !known.contains(&c.meta.id)
+                            })
                             .take(limit)
                             .cloned()
                             .collect()
@@ -465,6 +497,9 @@ async fn handle_client_connection(
                             break;
                         }
                     }
+                }
+                WireMessage::HistoryClear { cleared_at_ms } => {
+                    state.handle_history_clear(cleared_at_ms, Some(conn_id)).await;
                 }
                 WireMessage::Ping { ts_ms } => {
                     let _ = out_tx.try_send(WireMessage::Pong { ts_ms });
@@ -614,7 +649,7 @@ async fn handle_ipc_client(state: Arc<DaemonState>, stream: UnixStream) -> Resul
             },
         },
         IpcRequest::Clear => {
-            state.history.lock().await.clear();
+            state.handle_history_clear(now_millis(), None).await;
             IpcResponse::Ok {
                 message: "cleared in-memory clipboard history".into(),
             }

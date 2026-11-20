@@ -84,6 +84,7 @@ async fn end_to_end_encrypted_client_server_sync_and_replay() {
             device_name: "Android Phone".into(),
             platform: "android".into(),
             policy: TailnetPolicy::AllowLoopbackForTests,
+            initial_cleared_before_ms: 0,
         },
         ev_tx,
     );
@@ -146,6 +147,7 @@ async fn strict_tailnet_client_refuses_non_tailnet_destination() {
             device_name: "Android Phone".into(),
             platform: "android".into(),
             policy: TailnetPolicy::Strict,
+            initial_cleared_before_ms: 0,
         },
         ev_tx,
     );
@@ -162,4 +164,132 @@ async fn strict_tailnet_client_refuses_non_tailnet_destination() {
     }
     handle.shutdown();
     assert!(rejected, "strict policy must refuse non-tailnet LAN IP");
+}
+
+#[tokio::test]
+async fn history_clear_prevents_replay_on_reconnect() {
+    let key = MasterKey::generate();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let initial_clip = ClipItem::new_text("pc-dev-1", "linux-pc", "Old clip before clear").unwrap();
+    let initial_ts = initial_clip.meta.created_at_ms;
+    let server_key = key.clone();
+
+    let server_task = tokio::spawn(async move {
+        let mut ring = ClipRingBuffer::default();
+        ring.insert(initial_clip);
+
+        // Handle 2 consecutive client connections to simulate Clear -> reconnect
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = server_handshake(stream, &server_key).await.unwrap();
+            let srv_id = WireMessage::Identify(PeerIdentity {
+                device_id: "pc-dev-1".into(),
+                device_name: "linux-pc".into(),
+                platform: "linux".into(),
+                protocol_version: PROTOCOL_VERSION,
+                last_seen_clip_id: ring.latest().map(|c| c.meta.id.clone()),
+            });
+            writer.write_frame(&srv_id.encode().unwrap()).await.unwrap();
+            let _ = reader.read_frame().await.unwrap(); // client Identify
+
+            loop {
+                let f = match tokio::time::timeout(Duration::from_millis(500), reader.read_frame())
+                    .await
+                {
+                    Ok(Ok(bytes)) => bytes,
+                    _ => break,
+                };
+                match WireMessage::decode(&f).unwrap() {
+                    WireMessage::SyncRequest(req) => {
+                        let to_send: Vec<ClipItem> = ring
+                            .items()
+                            .filter(|c| c.meta.created_at_ms > req.since_ms)
+                            .cloned()
+                            .collect();
+                        for item in to_send.into_iter().rev() {
+                            writer
+                                .write_frame(&WireMessage::ClipPush(item).encode().unwrap())
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    WireMessage::HistoryClear { cleared_at_ms } => {
+                        ring.clear_up_to(cleared_at_ms);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ring.len()
+    });
+
+    // Connection 1: connect, receive old clip, then Clear history
+    let (ev_tx1, mut ev_rx1) = mpsc::unbounded_channel();
+    let h1 = spawn_sync_client(
+        ClientConfig {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            key: key.clone(),
+            device_id: "phone-1".into(),
+            device_name: "Android Phone".into(),
+            platform: "android".into(),
+            policy: TailnetPolicy::AllowLoopbackForTests,
+            initial_cleared_before_ms: 0,
+        },
+        ev_tx1,
+    );
+
+    let mut got_old = false;
+    while !got_old {
+        if let Ok(Some(ClientEvent::ClipReceived(_))) =
+            tokio::time::timeout(Duration::from_secs(2), ev_rx1.recv()).await
+        {
+            got_old = true;
+        }
+    }
+    let clear_ts = initial_ts + 1000;
+    h1.try_clear_history(clear_ts);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    h1.shutdown();
+
+    // Connection 2: reconnect with saved clear watermark; old clip must NOT reappear
+    let (ev_tx2, mut ev_rx2) = mpsc::unbounded_channel();
+    let h2 = spawn_sync_client(
+        ClientConfig {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            key,
+            device_id: "phone-1".into(),
+            device_name: "Android Phone".into(),
+            platform: "android".into(),
+            policy: TailnetPolicy::AllowLoopbackForTests,
+            initial_cleared_before_ms: clear_ts,
+        },
+        ev_tx2,
+    );
+
+    let mut connected2 = false;
+    let mut resurrected = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(150), ev_rx2.recv()).await
+        {
+            match ev {
+                ClientEvent::Connected { .. } => connected2 = true,
+                ClientEvent::ClipReceived(_) => resurrected = true,
+                _ => {}
+            }
+        }
+    }
+    h2.shutdown();
+
+    let remaining = tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(connected2);
+    assert!(!resurrected, "cleared clip must never reappear after reconnect");
+    assert_eq!(remaining, 0, "server ring buffer must also be cleared");
 }

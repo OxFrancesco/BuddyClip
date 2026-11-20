@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use jni::JNIEnv;
 use jni::JavaVM;
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
-use jni::sys::{jboolean, jint, jstring, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use log::{error, info, warn};
 use serde::Serialize;
 use buddyclip_core::clipboard::ClipItem;
@@ -109,6 +109,17 @@ fn dispatch_event(vm: &JavaVM, callback: &GlobalRef, event: ClientEvent) {
                 let _ = env.exception_clear();
             }
         }
+        ClientEvent::HistoryCleared { cleared_at_ms } => {
+            if let Err(e) = env.call_method(
+                callback.as_obj(),
+                "onHistoryCleared",
+                "(J)V",
+                &[JValue::Long(cleared_at_ms as i64)],
+            ) {
+                warn!("onHistoryCleared JNI callback error: {e}");
+                let _ = env.exception_clear();
+            }
+        }
         ClientEvent::ClipReceived(item) => {
             let res = (|| -> jni::errors::Result<()> {
                 let jid = env.new_string(&item.meta.id)?;
@@ -169,6 +180,7 @@ pub extern "system" fn Java_dev_buddyclip_app_BuddyClipNative_nativeStart(
     key_b64: JString,
     device_id: JString,
     device_name: JString,
+    cleared_at_ms: jlong,
     callback: JObject,
 ) -> jstring {
     init_logging();
@@ -200,6 +212,7 @@ pub extern "system" fn Java_dev_buddyclip_app_BuddyClipNative_nativeStart(
             device_name: device_name.clone(),
             platform: "android".into(),
             policy: TailnetPolicy::Strict,
+            initial_cleared_before_ms: cleared_at_ms.max(0) as u64,
         };
 
         let rt = runtime();
@@ -297,6 +310,18 @@ pub extern "system" fn Java_dev_buddyclip_app_BuddyClipNative_nativeRequestSync(
     let slot = engine_lock().lock().unwrap();
     if let Some(eng) = slot.as_ref() {
         eng.handle.request_sync();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_buddyclip_app_BuddyClipNative_nativeClearHistory(
+    _env: JNIEnv,
+    _class: JClass,
+    cleared_at_ms: jlong,
+) {
+    let slot = engine_lock().lock().unwrap();
+    if let Some(eng) = slot.as_ref() {
+        eng.handle.try_clear_history(cleared_at_ms.max(0) as u64);
     }
 }
 

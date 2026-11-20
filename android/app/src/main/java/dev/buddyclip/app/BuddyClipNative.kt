@@ -13,6 +13,7 @@ interface BuddyClipNativeCallback {
         createdAtMs: Long,
     )
     fun onClipSent(clipId: String)
+    fun onHistoryCleared(clearedAtMs: Long)
 }
 
 @Serializable
@@ -39,6 +40,7 @@ object BuddyClipNative {
         keyBase64: String,
         deviceId: String,
         deviceName: String,
+        clearedAtMs: Long,
         callback: BuddyClipNativeCallback,
     ): String?
 
@@ -49,6 +51,8 @@ object BuddyClipNative {
     external fun nativeTriggerReconnect()
 
     external fun nativeRequestSync()
+
+    external fun nativeClearHistory(clearedAtMs: Long)
 
     external fun nativeParsePairingUri(uri: String): String
 

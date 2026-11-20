@@ -160,17 +160,16 @@ class BuddyClipSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val (statusText, dotRes) = when (phase) {
-            ConnectionPhase.CONNECTED -> "Connected" to R.drawable.ic_dot_connected
-            ConnectionPhase.CONNECTING -> "Connecting…" to R.drawable.ic_dot_connecting
-            else -> "Disconnected" to R.drawable.ic_dot_disconnected
+        val statusText = when (phase) {
+            ConnectionPhase.CONNECTED -> "Connected"
+            ConnectionPhase.CONNECTING -> "Connecting…"
+            else -> "Disconnected"
         }
 
         // Custom RemoteViews keeps the Send Clipboard button directly tappable in the
         // collapsed (unopened) notification view on Android / Samsung One UI.
         val views = RemoteViews(packageName, R.layout.notification_status).apply {
             setTextViewText(R.id.notif_status_text, statusText)
-            setImageViewResource(R.id.notif_status_dot, dotRes)
             setOnClickPendingIntent(R.id.notif_send_btn, sendIntent)
         }
 
@@ -294,7 +293,7 @@ class BuddyClipSyncService : Service() {
                         mimeType = mimeType,
                         payload = payload,
                         createdAtMs = createdAtMs,
-                    )
+                    ) ?: return
                     val copied = if (SyncRepository.config.value.autoWriteClipboard) {
                         var wrote = false
                         val latch = java.util.concurrent.CountDownLatch(1)
@@ -314,6 +313,10 @@ class BuddyClipSyncService : Service() {
                 override fun onClipSent(clipId: String) {
                     Log.d(TAG, "Encrypted clip sent: $clipId")
                 }
+
+                override fun onHistoryCleared(clearedAtMs: Long) {
+                    SyncRepository.onNativeHistoryCleared(clearedAtMs)
+                }
             }
 
             val err = BuddyClipNative.nativeStart(
@@ -322,6 +325,7 @@ class BuddyClipSyncService : Service() {
                 keyBase64 = cfg.keyBase64,
                 deviceId = cfg.deviceId,
                 deviceName = cfg.deviceName,
+                clearedAtMs = cfg.historyClearedAtMs,
                 callback = callback,
             )
             if (err != null) {

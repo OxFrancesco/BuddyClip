@@ -177,7 +177,10 @@ object SyncRepository {
         mimeType: String,
         payload: ByteArray,
         createdAtMs: Long,
-    ): UiClipItem {
+    ): UiClipItem? {
+        if (createdAtMs <= _config.value.historyClearedAtMs) {
+            return null
+        }
         val item = UiClipItem(
             id = id,
             originName = originName,
@@ -191,13 +194,36 @@ object SyncRepository {
         return item
     }
 
+    fun onNativeHistoryCleared(clearedAtMs: Long) {
+        val cur = _config.value
+        val effective = maxOf(cur.historyClearedAtMs, clearedAtMs)
+        if (effective != cur.historyClearedAtMs) {
+            val updated = cur.copy(historyClearedAtMs = effective)
+            store.save(updated)
+            _config.value = updated
+        }
+        _history.value = _history.value.filter { it.createdAtMs > effective }
+        if (_history.value.isEmpty()) {
+            runCatching {
+                File(appContext.cacheDir, "clip_share").deleteRecursively()
+            }
+        }
+    }
+
     fun latestRemoteClip(): UiClipItem? =
         _history.value.firstOrNull { !it.isFromLocal } ?: _history.value.firstOrNull()
 
     fun clearHistory() {
+        val now = System.currentTimeMillis()
+        val cur = _config.value
+        val updated = cur.copy(historyClearedAtMs = maxOf(cur.historyClearedAtMs, now))
+        if (cur.isPaired) {
+            store.save(updated)
+        }
+        _config.value = updated
         _history.value = emptyList()
-        lastSyncedDigest = null
-        // Purge cached shared images too
+        // Keep lastSyncedDigest intact so autoSyncOnOpen doesn't re-upload the current Android clipboard.
+        BuddyClipNative.nativeClearHistory(updated.historyClearedAtMs)
         runCatching {
             File(appContext.cacheDir, "clip_share").deleteRecursively()
         }

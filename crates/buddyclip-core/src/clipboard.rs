@@ -146,6 +146,7 @@ pub struct ClipRingBuffer {
     total_bytes: usize,
     max_items: usize,
     max_bytes: usize,
+    cleared_before_ms: u64,
 }
 
 impl Default for ClipRingBuffer {
@@ -162,12 +163,25 @@ impl ClipRingBuffer {
             total_bytes: 0,
             max_items: max_items.max(1),
             max_bytes: max_bytes.max(1024),
+            cleared_before_ms: 0,
         }
     }
 
-    /// Inserts a clip if its ID has not been seen yet.
-    /// Returns `true` if inserted (new clip), `false` if duplicate.
+    pub fn with_cleared_before(mut self, cleared_before_ms: u64) -> Self {
+        self.cleared_before_ms = cleared_before_ms;
+        self
+    }
+
+    pub fn cleared_before_ms(&self) -> u64 {
+        self.cleared_before_ms
+    }
+
+    /// Inserts a clip if its ID has not been seen yet and it is newer than the clear watermark.
+    /// Returns `true` if inserted (new clip), `false` if duplicate or cleared.
     pub fn insert(&mut self, item: ClipItem) -> bool {
+        if item.meta.created_at_ms <= self.cleared_before_ms {
+            return false;
+        }
         if self.seen_ids.contains(&item.meta.id) {
             return false;
         }
@@ -215,8 +229,16 @@ impl ClipRingBuffer {
     }
 
     pub fn clear(&mut self) {
-        self.items.clear();
-        self.seen_ids.clear();
-        self.total_bytes = 0;
+        self.clear_up_to(now_millis());
+    }
+
+    pub fn clear_up_to(&mut self, cleared_at_ms: u64) {
+        if cleared_at_ms > self.cleared_before_ms {
+            self.cleared_before_ms = cleared_at_ms;
+        }
+        self.items
+            .retain(|item| item.meta.created_at_ms > self.cleared_before_ms);
+        self.seen_ids = self.items.iter().map(|i| i.meta.id.clone()).collect();
+        self.total_bytes = self.items.iter().map(|i| i.payload.len()).sum();
     }
 }
