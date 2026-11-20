@@ -41,7 +41,6 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -67,7 +66,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -167,20 +165,27 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun BuddyClipTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val scheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context)
-    } else {
-        darkColorScheme(
-            primary = Color(0xFF2DD4BF),
-            onPrimary = Color(0xFF042F2E),
-            secondary = Color(0xFF5EEAD4),
-            background = Color(0xFF0B111B),
-            surface = Color(0xFF0F172A),
-            surfaceContainer = Color(0xFF131D30),
-            surfaceContainerHigh = Color(0xFF1A263D),
-        )
-    }
+    // oddofrancesco.com/design dark palette: pure black (#000000), coral (#D6544B), crisp white (#FFFFFF)
+    val scheme = darkColorScheme(
+        primary = Color(0xFFD6544B),
+        onPrimary = Color(0xFF000000),
+        primaryContainer = Color(0xFF2B1412),
+        onPrimaryContainer = Color(0xFFD6544B),
+        secondary = Color(0xFFD6544B),
+        onSecondary = Color(0xFF000000),
+        secondaryContainer = Color(0xFF1C1C17),
+        onSecondaryContainer = Color(0xFFFFFFFF),
+        background = Color(0xFF000000),
+        onBackground = Color(0xFFFFFFFF),
+        surface = Color(0xFF000000),
+        onSurface = Color(0xFFFFFFFF),
+        surfaceVariant = Color(0xFF141414),
+        onSurfaceVariant = Color(0xFFA3A3A3),
+        surfaceContainer = Color(0xFF0E0E0E),
+        surfaceContainerHigh = Color(0xFF141414),
+        outline = Color(0xFF222222),
+        outlineVariant = Color(0xFF222222),
+    )
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
@@ -269,10 +274,10 @@ private fun BuddyClipScreen(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Rounded.Shield,
+                            imageVector = Icons.AutoMirrored.Rounded.Send,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(20.dp),
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(

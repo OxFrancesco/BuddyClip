@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
@@ -42,11 +43,7 @@ class BuddyClipSyncService : Service() {
             return START_NOT_STICKY
         }
 
-        val notification = buildStatusNotification(
-            title = "BuddyClip · Connecting…",
-            text = "Tailnet E2EE -> ${cfg.hostName.ifBlank { cfg.host }}",
-            hasRemoteClip = SyncRepository.latestRemoteClip() != null,
-        )
+        val notification = buildStatusNotification(ConnectionPhase.CONNECTING)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -86,12 +83,17 @@ class BuddyClipSyncService : Service() {
 
     private fun createChannels() {
         val nm = getSystemService(NotificationManager::class.java) ?: return
+        // Clean up legacy low-importance channel so existing installs adopt the silent default-importance channel.
+        nm.deleteNotificationChannel(LEGACY_CHANNEL_STATUS)
+
         val statusChannel = NotificationChannel(
             CHANNEL_STATUS,
-            "Tailnet Sync Status",
-            NotificationManager.IMPORTANCE_LOW,
+            "Connection Status",
+            NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
-            description = "Persistent status and quick Send/Copy controls for BuddyClip"
+            description = "Persistent status and one-tap Send Clipboard button"
+            setSound(null, null)
+            enableVibration(false)
             setShowBadge(false)
         }
         val clipChannel = NotificationChannel(
@@ -99,7 +101,7 @@ class BuddyClipSyncService : Service() {
             "Incoming Clips",
             NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
-            description = "Subtle alerts when a clip arrives from your PC"
+            description = "Quiet alert when a clip arrives from your PC"
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
@@ -139,11 +141,7 @@ class BuddyClipSyncService : Service() {
         runCatching { cm.unregisterNetworkCallback(cb) }
     }
 
-    private fun buildStatusNotification(
-        title: String,
-        text: String,
-        hasRemoteClip: Boolean,
-    ): Notification {
+    private fun buildStatusNotification(phase: ConnectionPhase): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             10,
@@ -162,64 +160,41 @@ class BuddyClipSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_STATUS)
+        val (statusText, dotRes) = when (phase) {
+            ConnectionPhase.CONNECTED -> "Connected" to R.drawable.ic_dot_connected
+            ConnectionPhase.CONNECTING -> "Connecting…" to R.drawable.ic_dot_connecting
+            else -> "Disconnected" to R.drawable.ic_dot_disconnected
+        }
+
+        // Custom RemoteViews keeps the Send Clipboard button directly tappable in the
+        // collapsed (unopened) notification view on Android / Samsung One UI.
+        val views = RemoteViews(packageName, R.layout.notification_status).apply {
+            setTextViewText(R.id.notif_status_text, statusText)
+            setImageViewResource(R.id.notif_status_dot, dotRes)
+            setOnClickPendingIntent(R.id.notif_send_btn, sendIntent)
+        }
+
+        return NotificationCompat.Builder(this, CHANNEL_STATUS)
             .setSmallIcon(R.drawable.ic_tile_clipboard)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setColor(BRAND_CORAL)
+            .setContentTitle(statusText)
+            .setShowWhen(false)
             .setOngoing(true)
             .setSilent(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openIntent)
-            .addAction(
-                R.drawable.ic_tile_clipboard,
-                "Send Clipboard",
-                sendIntent,
-            )
-
-        if (hasRemoteClip) {
-            val copyIntent = PendingIntent.getActivity(
-                this,
-                12,
-                Intent(this, CopyClipActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            builder.addAction(
-                R.drawable.ic_tile_clipboard,
-                "Copy Latest",
-                copyIntent,
-            )
-        }
-
-        return builder.build()
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(views)
+            .setCustomBigContentView(views)
+            .build()
     }
 
     private fun refreshStatusNotification() {
         mainHandler.post {
             val state = SyncRepository.connection.value
-            val title = when (state.phase) {
-                ConnectionPhase.CONNECTED -> "BuddyClip · Connected"
-                ConnectionPhase.CONNECTING -> "BuddyClip · Connecting…"
-                ConnectionPhase.DISCONNECTED -> "BuddyClip · Reconnecting…"
-                ConnectionPhase.ERROR -> "BuddyClip · Connection Error"
-                else -> "BuddyClip"
-            }
-            val sub = if (state.fingerprint.isNotBlank() && state.phase == ConnectionPhase.CONNECTED) {
-                "${state.detail} · E2EE ${state.fingerprint}"
-            } else {
-                state.detail
-            }
             val nm = getSystemService(NotificationManager::class.java) ?: return@post
-            nm.notify(
-                NOTIFICATION_ID,
-                buildStatusNotification(
-                    title = title,
-                    text = sub,
-                    hasRemoteClip = SyncRepository.latestRemoteClip() != null,
-                ),
-            )
+            nm.notify(NOTIFICATION_ID, buildStatusNotification(state.phase))
         }
     }
 
@@ -237,17 +212,18 @@ class BuddyClipSyncService : Service() {
             val title = if (copiedDirectly) {
                 "Copied from ${item.originName}"
             } else {
-                "Clip from ${item.originName} (tap to copy)"
+                "Tap to copy from ${item.originName}"
             }
             val n = NotificationCompat.Builder(this, CHANNEL_CLIPS)
                 .setSmallIcon(R.drawable.ic_tile_clipboard)
+                .setColor(BRAND_CORAL)
                 .setContentTitle(title)
-                .setContentText(item.preview(110))
+                .setContentText(item.preview(64))
+                .setShowWhen(false)
                 .setAutoCancel(true)
                 .setSilent(true)
-                .setTimeoutAfter(12_000)
+                .setTimeoutAfter(8_000)
                 .setContentIntent(copyIntent)
-                .addAction(R.drawable.ic_tile_clipboard, "Copy", copyIntent)
                 .build()
             val nm = getSystemService(NotificationManager::class.java) ?: return@post
             nm.notify(CLIP_NOTIFICATION_ID, n)
@@ -256,7 +232,9 @@ class BuddyClipSyncService : Service() {
 
     companion object {
         private const val TAG = "buddyclip-svc"
-        private const val CHANNEL_STATUS = "buddyclip_status"
+        private const val BRAND_CORAL = 0xFFD6544B.toInt()
+        private const val LEGACY_CHANNEL_STATUS = "buddyclip_status"
+        private const val CHANNEL_STATUS = "buddyclip_status_v2"
         private const val CHANNEL_CLIPS = "buddyclip_clips"
         private const val NOTIFICATION_ID = 1001
         private const val CLIP_NOTIFICATION_ID = 1002
