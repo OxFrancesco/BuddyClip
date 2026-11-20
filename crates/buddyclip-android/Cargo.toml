@@ -1,0 +1,20 @@
+[package]
+name = "buddyclip-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "buddyclip_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+buddyclip-core = { path = "../buddyclip-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BuddyClip</string>
+    <string name="action_send_to_pc">Send to PC (BuddyClip)</string>
+    <string name="tile_label">Send to PC</string>
+</resources>

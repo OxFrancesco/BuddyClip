@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build -p buddyclip-cli --release --target x86_64-unknown-linux-musl
+      - run: cp target/x86_64-unknown-linux-musl/release/buddyclip buddyclip-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddyclip-linux-x86_64
+          path: buddyclip-linux-x86_64
+
+  build-linux-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p buddyclip-cli --release
+      - run: cp target/release/buddyclip buddyclip-linux-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddyclip-linux-aarch64
+          path: buddyclip-linux-aarch64
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "21"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Android NDK 29 & SDK
+        run: |
+          yes | "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;29.0.14206865" \
+            "platforms;android-37.1" \
+            "build-tools;37.0.0" || true
+      - name: Build Android APK
+        run: ./scripts/build-apk.sh
+      - name: Stage APK
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "BuddyClip-${TAG}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddyclip-android-apk
+          path: "BuddyClip-*-android-arm64.apk"
+
+  publish:
+    needs: [build-linux-x86_64, build-linux-aarch64, build-android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Copy installer & generate checksums
+        run: |
+          cp install.sh dist/install.sh
+          cd dist
+          sha256sum * > checksums.txt
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
