@@ -237,6 +237,7 @@ class BuddyClipSyncService : Service() {
         private const val CHANNEL_CLIPS = "buddyclip_clips"
         private const val NOTIFICATION_ID = 1001
         private const val CLIP_NOTIFICATION_ID = 1002
+        private const val RECENT_CLIP_WINDOW_MS = 30_000L
         private const val ACTION_STOP = "dev.buddyclip.app.STOP"
 
         @Volatile
@@ -294,6 +295,12 @@ class BuddyClipSyncService : Service() {
                         payload = payload,
                         createdAtMs = createdAtMs,
                     ) ?: return
+                    // Clips replayed after a reconnect can be old. Keep them in history,
+                    // but only copy and alert for ones copied on the PC just now.
+                    if (System.currentTimeMillis() - item.createdAtMs > RECENT_CLIP_WINDOW_MS) {
+                        activeService?.refreshStatusNotification()
+                        return
+                    }
                     val copied = if (SyncRepository.config.value.autoWriteClipboard) {
                         var wrote = false
                         val latch = java.util.concurrent.CountDownLatch(1)
