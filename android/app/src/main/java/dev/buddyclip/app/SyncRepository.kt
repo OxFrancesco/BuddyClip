@@ -189,7 +189,6 @@ object SyncRepository {
             createdAtMs = createdAtMs,
             isFromLocal = false,
         )
-        lastSyncedDigest = digest(mimeType, payload)
         prependHistory(item)
         return item
     }
@@ -264,7 +263,10 @@ object SyncRepository {
             }
         }.onFailure { e ->
             Log.w(TAG, "setPrimaryClip failed (likely OS background restriction): ${e.message}")
-        }.getOrDefault(false)
+        }.getOrDefault(false).also { wrote ->
+            // Track what the Android clipboard now holds, so opening the app doesn't send it back.
+            if (wrote) lastSyncedDigest = digest(item.mimeType, item.payload)
+        }
     }
 
     /**
