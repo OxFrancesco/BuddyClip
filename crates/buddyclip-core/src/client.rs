@@ -156,6 +156,8 @@ async fn run_client_loop(
     let mut backoff_secs: u64 = 1;
     let mut pending_outbox: Option<ClipItem> = None;
     let mut pending_clear_ms: Option<u64> = None;
+    let mut announce_connecting = true;
+    let mut last_disconnected_reason: Option<String> = None;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -169,6 +171,7 @@ async fn run_client_loop(
                     let mut h = history.lock().await;
                     h.insert(item.clone());
                     pending_outbox = Some(item);
+                    announce_connecting = true;
                 }
                 ControlCommand::ClearHistory(ts) => {
                     let mut h = history.lock().await;
@@ -180,16 +183,23 @@ async fn run_client_loop(
                         pending_outbox = None;
                     }
                     pending_clear_ms = Some(pending_clear_ms.map_or(ts, |prev| prev.max(ts)));
+                    announce_connecting = true;
                 }
-                ControlCommand::RequestSync | ControlCommand::ReconnectNow => {}
+                ControlCommand::RequestSync | ControlCommand::ReconnectNow => {
+                    announce_connecting = true;
+                }
             }
         }
 
         let target_label = format!("{}:{}", config.host, config.port);
-        let _ = event_tx.send(ClientEvent::Connecting {
-            target: target_label.clone(),
-        });
+        if announce_connecting {
+            let _ = event_tx.send(ClientEvent::Connecting {
+                target: target_label.clone(),
+            });
+            last_disconnected_reason = None;
+        }
 
+        let mut was_connected = false;
         match connect_and_run_session(
             &config,
             &mut cmd_rx,
@@ -198,16 +208,28 @@ async fn run_client_loop(
             &event_tx,
             &mut pending_outbox,
             &mut pending_clear_ms,
+            &mut was_connected,
         )
         .await
         {
             Ok(()) => {
                 // Clean shutdown or explicit reconnect request
                 backoff_secs = 1;
+                announce_connecting = true;
+                last_disconnected_reason = None;
             }
             Err(reason) => {
                 warn!(target = %target_label, error = %reason, "tailnet sync session ended");
-                let _ = event_tx.send(ClientEvent::Disconnected { reason });
+                if was_connected {
+                    backoff_secs = 1;
+                    last_disconnected_reason = None;
+                }
+                if last_disconnected_reason.as_deref() != Some(reason.as_str()) {
+                    last_disconnected_reason = Some(reason.clone());
+                    let _ = event_tx.send(ClientEvent::Disconnected { reason });
+                }
+                // Avoid oscillating Connecting/Disconnected on silent background retries.
+                announce_connecting = false;
             }
         }
 
@@ -220,10 +242,11 @@ async fn run_client_loop(
         tokio::pin!(sleep);
         tokio::select! {
             _ = &mut sleep => {
-                backoff_secs = (backoff_secs * 2).min(15);
+                backoff_secs = (backoff_secs * 2).min(60);
             }
             _ = reconnect_notify.notified() => {
                 backoff_secs = 1;
+                announce_connecting = true;
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -237,6 +260,7 @@ async fn run_client_loop(
                         h.insert(item.clone());
                         pending_outbox = Some(item);
                         backoff_secs = 1;
+                        announce_connecting = true;
                     }
                     ControlCommand::ClearHistory(ts) => {
                         let mut h = history.lock().await;
@@ -249,9 +273,11 @@ async fn run_client_loop(
                         }
                         pending_clear_ms = Some(pending_clear_ms.map_or(ts, |prev| prev.max(ts)));
                         backoff_secs = 1;
+                        announce_connecting = true;
                     }
                     ControlCommand::ReconnectNow | ControlCommand::RequestSync => {
                         backoff_secs = 1;
+                        announce_connecting = true;
                     }
                 }
             }
@@ -267,6 +293,7 @@ async fn connect_and_run_session(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     pending_outbox: &mut Option<ClipItem>,
     pending_clear_ms: &mut Option<u64>,
+    was_connected: &mut bool,
 ) -> Result<(), String> {
     let addr = resolve_tailnet_addr(&config.host, config.port, config.policy)
         .await
@@ -316,6 +343,7 @@ async fn connect_and_run_session(
     };
 
     info!(peer = %peer_name, addr = %addr, "connected over encrypted tailnet channel");
+    *was_connected = true;
     let _ = event_tx.send(ClientEvent::Connected {
         peer_name: peer_name.clone(),
         peer_addr: addr.to_string(),

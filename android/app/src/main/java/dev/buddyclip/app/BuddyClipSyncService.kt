@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 class BuddyClipSyncService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNotifiedStatusText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -43,7 +44,9 @@ class BuddyClipSyncService : Service() {
             return START_NOT_STICKY
         }
 
-        val notification = buildStatusNotification(ConnectionPhase.CONNECTING)
+        val initialText = statusTextFor(ConnectionPhase.CONNECTING)
+        val notification = buildStatusNotification(initialText)
+        lastNotifiedStatusText = initialText
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -66,6 +69,7 @@ class BuddyClipSyncService : Service() {
     }
 
     override fun onDestroy() {
+        lastNotifiedStatusText = null
         unregisterNetworkWatcher()
         BuddyClipNative.nativeStop()
         SyncRepository.onServiceStopped()
@@ -75,6 +79,7 @@ class BuddyClipSyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun stopEngineAndSelf() {
+        lastNotifiedStatusText = null
         BuddyClipNative.nativeStop()
         SyncRepository.onServiceStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -141,7 +146,13 @@ class BuddyClipSyncService : Service() {
         runCatching { cm.unregisterNetworkCallback(cb) }
     }
 
-    private fun buildStatusNotification(phase: ConnectionPhase): Notification {
+    private fun statusTextFor(phase: ConnectionPhase): String = when (phase) {
+        ConnectionPhase.CONNECTED -> "Connected"
+        ConnectionPhase.CONNECTING -> "Connecting…"
+        else -> "Disconnected"
+    }
+
+    private fun buildStatusNotification(statusText: String): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             10,
@@ -159,12 +170,6 @@ class BuddyClipSyncService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
-        val statusText = when (phase) {
-            ConnectionPhase.CONNECTED -> "Connected"
-            ConnectionPhase.CONNECTING -> "Connecting…"
-            else -> "Disconnected"
-        }
 
         // Custom RemoteViews keeps the Send Clipboard button directly tappable in the
         // collapsed (unopened) notification view on Android / Samsung One UI.
@@ -192,8 +197,16 @@ class BuddyClipSyncService : Service() {
     private fun refreshStatusNotification() {
         mainHandler.post {
             val state = SyncRepository.connection.value
+            val statusText = statusTextFor(state.phase)
+            // Keep showing Disconnected while background retries run; avoid waking
+            // NotificationManagerService unless the visible notification text actually changes.
+            if (statusText == lastNotifiedStatusText) return@post
+            if (lastNotifiedStatusText == "Disconnected" && state.phase == ConnectionPhase.CONNECTING) {
+                return@post
+            }
             val nm = getSystemService(NotificationManager::class.java) ?: return@post
-            nm.notify(NOTIFICATION_ID, buildStatusNotification(state.phase))
+            lastNotifiedStatusText = statusText
+            nm.notify(NOTIFICATION_ID, buildStatusNotification(statusText))
         }
     }
 
@@ -298,7 +311,6 @@ class BuddyClipSyncService : Service() {
                     // Clips replayed after a reconnect can be old. Keep them in history,
                     // but only copy and alert for ones copied on the PC just now.
                     if (System.currentTimeMillis() - item.createdAtMs > RECENT_CLIP_WINDOW_MS) {
-                        activeService?.refreshStatusNotification()
                         return
                     }
                     val copied = if (SyncRepository.config.value.autoWriteClipboard) {
@@ -313,7 +325,6 @@ class BuddyClipSyncService : Service() {
                     } else {
                         false
                     }
-                    activeService?.refreshStatusNotification()
                     activeService?.postReceivedClipNotification(item, copied)
                 }
 

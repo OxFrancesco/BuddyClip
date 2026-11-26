@@ -161,6 +161,7 @@ object SyncRepository {
             "error" -> ConnectionPhase.ERROR
             else -> ConnectionPhase.DISCONNECTED
         }
+        val prevPhase = _connection.value.phase
         val effectiveFp = fingerprint.ifBlank { _connection.value.fingerprint }
         _connection.value = _connection.value.copy(
             phase = phase,
@@ -168,7 +169,9 @@ object SyncRepository {
             fingerprint = effectiveFp,
             serviceRunning = true,
         )
-        BuddyClipTileService.requestUpdate(appContext)
+        if (phase != prevPhase) {
+            BuddyClipTileService.requestUpdate(appContext)
+        }
     }
 
     fun onNativeClipReceived(
